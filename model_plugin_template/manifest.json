@@ -1,0 +1,27 @@
+{
+  "model_id": "new_model_id",
+  "name": "신규 배터리 모델",
+  "version": "1.0.0",
+  "enabled": false,
+  "deployment_status": "candidate",
+  "model_type": "sklearn_classifier",
+  "feature_profile": "battery_pack_v1",
+  "artifact": "model.joblib",
+  "metadata": "metadata.json",
+  "threshold": 0.5,
+  "higher_is_anomaly": true,
+  "supported_modes": ["CHG", "DCHG"],
+  "description": "모델 목적과 입력 범위를 기록합니다.",
+  "validation_scope": "검증 데이터와 분할 단위를 기록합니다.",
+  "metrics": {
+    "accuracy": 0.0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0
+  },
+  "file_policy": {
+    "fire_rate_threshold": 0.1,
+    "min_consecutive_rows": 5,
+    "score_p95_threshold": 0.5
+  }
+}

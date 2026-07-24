@@ -1,0 +1,12 @@
+{
+  "feature_columns": [
+    "elapsed_sec",
+    "cv_range",
+    "cv_resid_maxabs",
+    "temp_range",
+    "temp_resid_maxabs"
+  ],
+  "fill_values": {},
+  "training_data_version": "YYYY-MM-DD",
+  "notes": "학습 시 사용한 정확한 특징 순서와 결측 대체값을 기록합니다."
+}

@@ -105,7 +105,7 @@ html, body, .stApp, [data-testid="stAppViewContainer"] {
 }
 [data-testid="stHeader"] { background: rgba(243, 246, 245, 0.96) !important; }
 
-/* Keep Community Cloud visually aligned even when .streamlit/config.toml is omitted. */
+/* Preserve the local light theme when Community Cloud applies browser defaults. */
 button[data-testid="stBaseButton-primary"],
 .stButton > button[kind="primary"] {
   background: var(--teal) !important;
@@ -121,32 +121,61 @@ button[data-testid="stBaseButton-primary"]:hover,
   background: var(--teal-dark) !important;
   border-color: var(--teal-dark) !important;
 }
-button[data-testid="stBaseButton-primary"]:focus-visible,
-.stButton > button[kind="primary"]:focus-visible {
-  box-shadow: 0 0 0 0.2rem rgba(15, 118, 110, 0.22) !important;
+[data-testid="stMain"] button[data-testid="stBaseButton-secondary"],
+[data-testid="stMain"] .stButton > button[kind="secondary"],
+[data-testid="stMain"] .stDownloadButton > button {
+  background: #f9fbfa !important;
+  border-color: rgba(23, 34, 32, 0.20) !important;
+  color: var(--ink) !important;
+  opacity: 1 !important;
+}
+[data-testid="stMain"] button[data-testid="stBaseButton-secondary"] *,
+[data-testid="stMain"] .stButton > button[kind="secondary"] *,
+[data-testid="stMain"] .stDownloadButton > button * {
+  color: var(--ink) !important;
+}
+[data-testid="stMain"] button[data-testid="stBaseButton-secondary"]:hover,
+[data-testid="stMain"] .stButton > button[kind="secondary"]:hover,
+[data-testid="stMain"] .stDownloadButton > button:hover {
+  background: #eef4f2 !important;
+  border-color: #91a39e !important;
+}
+[data-testid="stMain"] button:disabled,
+[data-testid="stMain"] button[aria-disabled="true"] {
+  background: #f4f7f6 !important;
+  border-color: #d4dcda !important;
+  color: #7a8783 !important;
+  opacity: 1 !important;
+}
+[data-testid="stMain"] button:disabled *,
+[data-testid="stMain"] button[aria-disabled="true"] * {
+  color: #7a8783 !important;
+}
+[data-testid="stMain"] [data-baseweb="input"] > div,
+[data-testid="stMain"] [data-baseweb="select"] > div,
+[data-testid="stMain"] [data-baseweb="textarea"] > div,
+[data-testid="stMain"] input,
+[data-testid="stMain"] textarea {
+  background: #ffffff !important;
+  border-color: #cbd5d2 !important;
+  color: var(--ink) !important;
+}
+[data-testid="stMain"] input::placeholder,
+[data-testid="stMain"] textarea::placeholder {
+  color: #87938f !important;
 }
 .stTabs [data-baseweb="tab-highlight"] {
   background-color: var(--teal) !important;
 }
-.stTabs [aria-selected="true"] {
-  background: var(--teal-soft) !important;
-  color: var(--teal-dark) !important;
-}
 [data-baseweb="slider"] [role="slider"] {
   background-color: var(--teal) !important;
   border-color: #f3f7f6 !important;
-  box-shadow: none !important;
-}
-[data-baseweb="slider"] [role="slider"] + div,
-[data-baseweb="slider"] [role="slider"] ~ div {
-  color: var(--teal-dark) !important;
 }
 [data-baseweb="checkbox"] [aria-checked="true"],
 [data-baseweb="radio"] [aria-checked="true"] {
   background-color: var(--teal) !important;
   border-color: var(--teal) !important;
 }
-a, a:visited { color: var(--teal-dark); }
 [data-testid="stSidebar"] { background: #182321; border-right: 1px solid #2d3b38; }
 [data-testid="stSidebar"] * { color: #f3f7f6; }
 [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stCaption { color: #c7d2cf !important; }

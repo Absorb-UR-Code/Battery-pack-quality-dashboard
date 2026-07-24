@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local-only configuration
+config/settings.local.json
+.env
+.streamlit/secrets.toml
+
+# Runtime uploads and generated results
+data/inbox/*
+!data/inbox/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# Local launch output
+*.log
+streamlit_*.out
+streamlit_*.err
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Non-runtime archives and scratch directories
+archived_models/
+battery_pack_ops_dashboard/
