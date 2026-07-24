@@ -1,0 +1,30 @@
+{
+  "model_id": "lstm_ae_fault_bank_v1",
+  "name": "LSTM-AE 유형별 재구성 모델",
+  "version": "1.0.0-candidate",
+  "enabled": true,
+  "deployment_status": "validation",
+  "model_type": "custom",
+  "feature_profile": "relative_mcv_mt_100row_ae_bank_v1",
+  "artifact": "lstm_ae_정상_v1.keras",
+  "adapter": "adapter.py",
+  "metadata": "metadata.json",
+  "threshold": 0.5,
+  "higher_is_anomaly": true,
+  "supported_modes": ["CHG", "DCHG"],
+  "description": "정상 및 4개 불량 유형별 LSTM Autoencoder의 재구성오차 raw argmin으로 판정하는 검증 후보입니다.",
+  "validation_scope": "Test01~09 내부 재현: 파일유형 9/9, 윈도우 Recall 1.000, F1 0.960, Specificity 0.901. Test05~09 및 파생 증강본이 학습에 포함되어 독립 일반화 검증이 아닙니다.",
+  "metrics": {
+    "accuracy": 0.9548272808,
+    "precision": 0.9235382309,
+    "recall": 1.0,
+    "f1": 0.9602494154,
+    "specificity": 0.9005847953,
+    "pack_type_accuracy": 1.0
+  },
+  "file_policy": {
+    "fire_rate_threshold": 1.0,
+    "min_consecutive_rows": 1,
+    "score_p95_threshold": 1.0
+  }
+}

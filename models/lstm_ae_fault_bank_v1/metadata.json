@@ -1,0 +1,50 @@
+{
+  "status": "validation_candidate",
+  "adoption_decision": "not_adopted_as_production_default",
+  "input_schema": {
+    "cell_voltage_pattern": "MxxCVxx",
+    "cell_voltage_count": 176,
+    "temperature_pattern": "MxxTxx",
+    "temperature_count": 32
+  },
+  "preprocessing": {
+    "feature_order": "176 naturally sorted cell-voltage sensors followed by 32 naturally sorted temperature sensors",
+    "relative_transform": "row sensor value minus same-row sensor-family mean",
+    "scaler": "scaler.npz",
+    "window_size": 100,
+    "training_stride": 20,
+    "operational_stride": 20
+  },
+  "decision": {
+    "window_rule": "raw reconstruction-error argmin over five autoencoders",
+    "file_rule": "select the window with maximum normal-AE error, then apply raw argmin",
+    "class_order": [
+      "정상",
+      "용량 불량",
+      "복합 불량",
+      "센싱와이어 불량",
+      "온도 센서 불량"
+    ]
+  },
+  "internal_replay": {
+    "window_stride": 20,
+    "tn": 462,
+    "fp": 51,
+    "fn": 0,
+    "tp": 616,
+    "accuracy": 0.9548272808,
+    "precision": 0.9235382309,
+    "recall": 1.0,
+    "f1": 0.9602494154,
+    "specificity": 0.9005847953,
+    "file_type_accuracy": 1.0
+  },
+  "limitations": [
+    "Test05-Test09 real events and augmentations derived from them were used for training.",
+    "The reported Test01-Test09 metrics are internal replay results, not independent external validation.",
+    "Test04 produced 18 false-positive windows and Test05 normal segments produced 33 false-positive windows at stride 20.",
+    "Using stride 1 instead of the validated stride 20 changed the Test04 pack verdict to a false positive, so this candidate is restricted to stride 20.",
+    "Similarity values shown as fault confidence are not calibrated probabilities.",
+    "The composite-fault autoencoder plateaued early and remains structurally unstable."
+  ]
+}

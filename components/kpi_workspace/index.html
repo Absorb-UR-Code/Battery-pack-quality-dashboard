@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: transparent;
+    }
+
+    #workspace-frame {
+      display: block;
+      width: 100%;
+      height: 1px;
+      border: 0;
+      overflow: hidden;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <iframe
+    id="workspace-frame"
+    title="팩 운전 신호 작업 영역"
+    scrolling="no"
+  ></iframe>
+
+  <script>
+    const frame = document.getElementById("workspace-frame");
+    let currentHtml = null;
+    let resizeObserver = null;
+    let mutationObserver = null;
+    let scheduledFrame = null;
+
+    function send(type, payload = {}) {
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type, ...payload },
+        "*"
+      );
+    }
+
+    function disconnectObservers() {
+      if (resizeObserver) resizeObserver.disconnect();
+      if (mutationObserver) mutationObserver.disconnect();
+      resizeObserver = null;
+      mutationObserver = null;
+    }
+
+    function measureContent() {
+      scheduledFrame = null;
+      const doc = frame.contentDocument;
+      if (!doc || !doc.body) return;
+
+      const content = doc.querySelector(".shell") || doc.body;
+      const rect = content.getBoundingClientRect();
+      const height = Math.max(1, Math.ceil(rect.height));
+
+      frame.style.height = `${height}px`;
+      send("streamlit:setFrameHeight", { height });
+    }
+
+    function scheduleMeasure() {
+      if (scheduledFrame !== null) return;
+      scheduledFrame = window.requestAnimationFrame(measureContent);
+    }
+
+    function observeContent() {
+      disconnectObservers();
+
+      const doc = frame.contentDocument;
+      if (!doc || !doc.body) return;
+
+      doc.documentElement.style.overflow = "hidden";
+      doc.body.style.overflow = "hidden";
+
+      const content = doc.querySelector(".shell") || doc.body;
+      resizeObserver = new ResizeObserver(scheduleMeasure);
+      resizeObserver.observe(content);
+
+      mutationObserver = new MutationObserver(scheduleMeasure);
+      mutationObserver.observe(content, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true,
+      });
+
+      if (doc.fonts && doc.fonts.ready) {
+        doc.fonts.ready.then(scheduleMeasure).catch(() => {});
+      }
+
+      scheduleMeasure();
+    }
+
+    function render(args) {
+      const html = args && typeof args.html === "string" ? args.html : "";
+
+      if (html === currentHtml && frame.contentDocument) {
+        scheduleMeasure();
+        return;
+      }
+
+      currentHtml = html;
+      disconnectObservers();
+      frame.onload = observeContent;
+      frame.srcdoc = html;
+    }
+
+    window.addEventListener("message", event => {
+      const message = event.data || {};
+      if (message.type === "streamlit:render") render(message.args || {});
+    });
+
+    send("streamlit:componentReady", { apiVersion: 1 });
+  </script>
+</body>
+</html>

@@ -1,0 +1,193 @@
+from pathlib import Path
+import sys
+
+import pandas as pd
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from core.config import load_settings
+from core.data_catalog import audit_data_quality, build_catalog, detect_sensor_columns, read_csv_resilient
+from core.diagnostic_display import (
+    fault_domain_coverage,
+    latest_fault_payload,
+    latest_scored_prediction,
+    reached_fault_payloads,
+)
+from core.features import build_row_features, build_sensor_kpis, sensor_snapshot_matrix
+from core.fault_log import batch_fault_events, build_fault_event, extract_fault_metadata, parse_probabilities
+from core.kpi_workspace_component import _COMPONENT_DIR
+from core.model_registry import discover_models
+from core.visuals import draggable_kpi_workspace_html
+
+
+def main() -> None:
+    sparse_rows = pd.DataFrame(
+        {
+            "row_index": range(1, 151),
+            "score": [float("nan")] * 150,
+            "predicted_anomaly": [0] * 150,
+        }
+    )
+    sparse_rows.loc[99, ["score", "predicted_anomaly"]] = [0.93, 1]
+    sparse_rows.loc[119, ["score", "predicted_anomaly"]] = [0.12, 0]
+    sparse_rows.loc[139, ["score", "predicted_anomaly"]] = [0.88, 1]
+    sparse_result = {
+        "row_result": sparse_rows,
+        "details": {
+            "window_size": 100,
+            "fault_by_row": {
+                "100": {
+                    "fault_type": "temperature sensor",
+                    "suspect_sensors": ["M16T02"],
+                },
+                "140": {
+                    "fault_type": "sensing wire",
+                    "suspect_sensors": ["M16CV11"],
+                },
+            },
+        },
+    }
+
+    sparse_flag, sparse_score, sparse_row = latest_scored_prediction(sparse_rows, 96)
+    assert not sparse_flag and pd.isna(sparse_score) and sparse_row is None
+    sparse_flag, sparse_score, sparse_row = latest_scored_prediction(sparse_rows, 101)
+    assert sparse_flag and sparse_score == 0.93 and sparse_row == 100
+    sparse_flag, sparse_score, sparse_row = latest_scored_prediction(sparse_rows, 121)
+    assert not sparse_flag and sparse_score == 0.12 and sparse_row == 120
+    sparse_flag, sparse_score, sparse_row = latest_scored_prediction(sparse_rows, 145)
+    assert sparse_flag and sparse_score == 0.88 and sparse_row == 140
+    assert [row for row, _ in reached_fault_payloads(sparse_result, 101)] == [100]
+    assert [row for row, _ in reached_fault_payloads(sparse_result, 145)] == [100, 140]
+    payload_row, payload = latest_fault_payload(sparse_result, 145)
+    assert payload_row == 140 and payload["suspect_sensors"] == ["M16CV11"]
+
+    sparse_domains = fault_domain_coverage(sparse_result, 150, end_position=145)
+    assert sparse_domains.loc[:99, "temperature_fault"].all()
+    assert not sparse_domains.loc[100:, "temperature_fault"].any()
+    assert sparse_domains.loc[40:139, "voltage_fault"].all()
+    assert not sparse_domains.loc[:39, "voltage_fault"].any()
+    assert not sparse_domains.loc[140:, "voltage_fault"].any()
+
+    dense_rows = pd.DataFrame(
+        {
+            "row_index": range(1, 111),
+            "score": [float("nan")] * 99 + [0.8] * 11,
+            "predicted_anomaly": [0] * 99 + [1] * 11,
+        }
+    )
+    dense_flag, dense_score, dense_row = latest_scored_prediction(dense_rows, 105)
+    assert dense_flag and dense_score == 0.8 and dense_row == 105
+
+    component_frontend = _COMPONENT_DIR / "index.html"
+    assert component_frontend.is_file(), component_frontend
+    component_html = component_frontend.read_text(encoding="utf-8")
+    assert "streamlit:setFrameHeight" in component_html
+    assert "ResizeObserver" in component_html
+    assert 'doc.querySelector(".shell")' in component_html
+
+    synthetic_result = {
+        "summary": {
+            "status": "NG_REVIEW",
+            "model_id": "fault-smoke",
+            "model_version": "1.0",
+            "mode": "DCHG",
+            "fire_rate": 0.25,
+            "score_p95": 0.91,
+            "score_max": 0.98,
+            "max_consecutive_rows": 18,
+        },
+        "details": {
+            "fault_type": "temperature sensor",
+            "fault_probabilities": {
+                "temperature sensor": 0.92,
+                "weld": 0.08,
+            },
+            "suspect_sensors": ["M16T02", "M16CV11"],
+        },
+    }
+    fault_metadata = extract_fault_metadata(synthetic_result)
+    assert fault_metadata["fault_type"] == "온도 센서 불량"
+    assert fault_metadata["suspect_modules"] == "M16"
+    assert fault_metadata["suspect_cells"] == "M16CV11"
+    assert parse_probabilities(fault_metadata["fault_probabilities"])["온도 센서 불량"] == 0.92
+    fault_event = build_fault_event(
+        synthetic_result,
+        source_file="Test09_NG_dchg.csv",
+        detected_row=120,
+        detected_at="2021-11-02 08:42:43",
+        origin="smoke",
+    )
+    assert fault_event is not None
+    assert fault_event["recommended_action"] == "온도 센서 교차검증"
+    repeated_fault_event = build_fault_event(
+        synthetic_result,
+        source_file="Test09_NG_dchg.csv",
+        detected_row=120,
+        detected_at="2021-11-02 08:42:43",
+        origin="smoke",
+        occurrence_key="second-live-run",
+    )
+    assert repeated_fault_event is not None
+    assert repeated_fault_event["event_id"] != fault_event["event_id"]
+    batch_events = batch_fault_events(
+        pd.DataFrame([{**synthetic_result["summary"], **fault_metadata, "file_name": "Test09_NG_dchg.csv"}]),
+        batch_id="smoke-batch",
+        detected_at="2021-11-02 08:42:43",
+    )
+    assert len(batch_events) == 1
+    assert batch_events.iloc[0]["fault_type"] == "온도 센서 불량"
+
+    settings = load_settings()
+    catalog = build_catalog(settings["data_sources"])
+    assert not catalog.empty, "데이터 카탈로그가 비어 있습니다."
+    assert catalog["readable"].all(), "읽을 수 없는 CSV가 있습니다."
+
+    models = {model.model_id: model for model in discover_models()}
+    active_models = [model for model in models.values() if model.is_active]
+    assert len(active_models) == 1, "운영 활성 모델은 정확히 1개여야 합니다."
+    assert active_models[0].healthy, "운영 활성 모델 패키지가 정상 상태가 아닙니다."
+
+    for token in ["Test02_OK_dchg", "Test09_NG_dchg"]:
+        row = catalog[catalog["file_name"].str.contains(token, case=False, na=False)].iloc[0]
+        frame = read_csv_resilient(Path(row["path"]))
+        _, quality = audit_data_quality(frame, settings["quality_policy"])
+        cv_cols, temp_cols = detect_sensor_columns(frame.columns)
+        features = build_row_features(frame, row["file_name"])
+        kpis = build_sensor_kpis(frame)
+        assert quality["status"] == "PASS", (token, quality)
+        assert len(cv_cols) == 176, (token, len(cv_cols))
+        assert len(temp_cols) == 32, (token, len(temp_cols))
+        assert len(features) == len(frame)
+        assert {"cv_range", "temp_range", "temp_pair_gap_max"}.issubset(features.columns)
+        assert {"cv_mean", "cv_std", "temp_mean", "temp_min", "temp_max", "temp_range", "temp_std"}.issubset(kpis.columns)
+        assert len(sensor_snapshot_matrix(frame.iloc[0], cv_cols, "voltage").stack()) == 176
+        assert len(sensor_snapshot_matrix(frame.iloc[0], temp_cols, "temperature").stack()) == 32
+        workspace_html = draggable_kpi_workspace_html(frame.head(30), kpis.head(30), f"smoke::{token}")
+        assert "draggable = true" in workspace_html
+        assert "팩 운전 신호" in workspace_html
+        assert "그래프 제거" in workspace_html
+        assert "const ROW_COUNT = 3" in workspace_html
+        assert "const MAX_PER_ROW = 2" in workspace_html
+        assert ".row-content.single .chart-panel" in workspace_html
+        assert "이미 배치된 그래프도 다시 끌어 순서를 바꿀 수 있습니다" in workspace_html
+        assert "row-meta" not in workspace_html
+        assert "workspace-placeholder" in workspace_html
+        assert "renderWorkspace(true)" in workspace_html
+        assert "wide ? 1440 : 720" in workspace_html
+        assert "makePanel(metric,metrics.length === 1)" in workspace_html
+        assert ".remove-zone { display:none; }" in workspace_html
+        assert '<span class="drag-icon">+</span>' in workspace_html
+        for color in ["#0057B8", "#6A1B9A", "#00695C", "#8A5A00", "#37474F"]:
+            assert color in workspace_html, f"KPI 고유 색상이 누락되었습니다: {color}"
+        assert "color-mix(in srgb,var(--accent) 6%,#fff)" in workspace_html
+        assert 'stroke="rgba(255,255,255,.86)"' in workspace_html
+        assert '<span class="drag-icon">끌기</span>' not in workspace_html
+        print(token, "DATA_QA_PASS", f"CV={len(cv_cols)}", f"TEMP={len(temp_cols)}")
+
+    print("ACTIVE_MODELS", len(active_models), active_models[0].model_id, "PASS")
+
+
+if __name__ == "__main__":
+    main()

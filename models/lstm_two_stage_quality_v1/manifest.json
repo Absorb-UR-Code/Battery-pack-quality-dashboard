@@ -1,0 +1,28 @@
+{
+  "model_id": "lstm_two_stage_quality_v1",
+  "name": "배터리팩 LSTM 모델",
+  "version": "1.0.0",
+  "enabled": true,
+  "deployment_status": "production",
+  "model_type": "custom",
+  "feature_profile": "relative_mcv_mt_100row_v1",
+  "artifact": "stage1_binary.keras",
+  "adapter": "adapter.py",
+  "metadata": "metadata.json",
+  "threshold": 0.5,
+  "higher_is_anomaly": true,
+  "supported_modes": ["CHG", "DCHG"],
+  "description": "1단계 LSTM은 정상·불량을 판정하고, 불량 윈도우에만 2단계 LSTM을 적용해 용량·용접·센싱와이어·온도 센서 불량 확률을 제공합니다.",
+  "validation_scope": "내부 Test01~09 재현 검증. Test05~09 기반 증강 데이터가 학습에 포함되어 신규 팩 일반화 성능으로 해석할 수 없습니다.",
+  "metrics": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+  },
+  "file_policy": {
+    "fire_rate_threshold": 1.0,
+    "min_consecutive_rows": 1,
+    "score_p95_threshold": 1.0
+  }
+}

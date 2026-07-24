@@ -1,0 +1,32 @@
+{
+  "data_sources": [
+    {
+      "name": "배포 예제 데이터",
+      "path": "data/demo",
+      "enabled": true,
+      "recursive": true,
+      "role": "demo"
+    },
+    {
+      "name": "업로드 Inbox",
+      "path": "data/inbox",
+      "enabled": true,
+      "recursive": true,
+      "role": "inbox"
+    }
+  ],
+  "quality_policy": {
+    "time_gap_seconds": 30.0,
+    "max_missing_sensor_rate": 0.01,
+    "max_duplicate_rate": 0.01,
+    "min_cell_voltage": 1.5,
+    "max_cell_voltage": 5.0,
+    "min_temperature": -40.0,
+    "max_temperature": 100.0
+  },
+  "display": {
+    "max_plot_rows": 3000,
+    "max_heatmap_rows": 500,
+    "default_batch_limit": 50
+  }
+}

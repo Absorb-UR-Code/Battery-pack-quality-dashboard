@@ -1,0 +1,37 @@
+{
+  "input_schema": {
+    "cell_voltage_pattern": "MxxCVxx",
+    "cell_voltage_count": 176,
+    "temperature_pattern": "MxxTxx",
+    "temperature_count": 32
+  },
+  "preprocessing": {
+    "feature_order": "176 cell-voltage sensors followed by 32 temperature sensors",
+    "relative_transform": "row sensor value minus same-row sensor-family mean",
+    "scaler": "scaler.npz",
+    "window_size": 100,
+    "training_stride": 20,
+    "operational_stride": 1,
+    "window_label_time": "last row"
+  },
+  "stage1": {
+    "artifact": "stage1_binary.keras",
+    "role": "OK/NG binary classification",
+    "threshold": 0.5
+  },
+  "stage2": {
+    "artifact": "stage2_fault_type.keras",
+    "role": "fault type classification after Stage-1 NG detection",
+    "class_order": [
+      "용량 불량",
+      "용접·접촉 불량",
+      "센싱와이어 불량",
+      "온도 센서 불량"
+    ]
+  },
+  "limitations": [
+    "The first 99 rows are warm-up rows and do not receive a model decision.",
+    "NG augmentation was derived from Test05-Test09, so reported internal scores are not independent external validation.",
+    "Suspect sensors are deviation-ranked candidates, not direct model attribution."
+  ]
+}
