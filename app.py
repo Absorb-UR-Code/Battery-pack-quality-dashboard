@@ -94,10 +94,59 @@ APP_CSS = """
   --panel: #ffffff;
   --canvas: #f3f6f5;
   --teal: #0f766e;
+  --teal-dark: #0b625b;
+  --teal-soft: #e8f2ef;
   --red: #c43d3d;
   --amber: #a56818;
 }
-.stApp { background: var(--canvas); color: var(--ink); }
+html, body, .stApp, [data-testid="stAppViewContainer"] {
+  background: var(--canvas) !important;
+  color: var(--ink) !important;
+}
+[data-testid="stHeader"] { background: rgba(243, 246, 245, 0.96) !important; }
+
+/* Keep Community Cloud visually aligned even when .streamlit/config.toml is omitted. */
+button[data-testid="stBaseButton-primary"],
+.stButton > button[kind="primary"] {
+  background: var(--teal) !important;
+  border-color: var(--teal) !important;
+  color: #ffffff !important;
+}
+button[data-testid="stBaseButton-primary"] *,
+.stButton > button[kind="primary"] * {
+  color: #ffffff !important;
+}
+button[data-testid="stBaseButton-primary"]:hover,
+.stButton > button[kind="primary"]:hover {
+  background: var(--teal-dark) !important;
+  border-color: var(--teal-dark) !important;
+}
+button[data-testid="stBaseButton-primary"]:focus-visible,
+.stButton > button[kind="primary"]:focus-visible {
+  box-shadow: 0 0 0 0.2rem rgba(15, 118, 110, 0.22) !important;
+}
+.stTabs [data-baseweb="tab-highlight"] {
+  background-color: var(--teal) !important;
+}
+.stTabs [aria-selected="true"] {
+  background: var(--teal-soft) !important;
+  color: var(--teal-dark) !important;
+}
+[data-baseweb="slider"] [role="slider"] {
+  background-color: var(--teal) !important;
+  border-color: #f3f7f6 !important;
+  box-shadow: none !important;
+}
+[data-baseweb="slider"] [role="slider"] + div,
+[data-baseweb="slider"] [role="slider"] ~ div {
+  color: var(--teal-dark) !important;
+}
+[data-baseweb="checkbox"] [aria-checked="true"],
+[data-baseweb="radio"] [aria-checked="true"] {
+  background-color: var(--teal) !important;
+  border-color: var(--teal) !important;
+}
+a, a:visited { color: var(--teal-dark); }
 [data-testid="stSidebar"] { background: #182321; border-right: 1px solid #2d3b38; }
 [data-testid="stSidebar"] * { color: #f3f7f6; }
 [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stCaption { color: #c7d2cf !important; }
