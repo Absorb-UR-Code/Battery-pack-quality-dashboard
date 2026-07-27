@@ -11,26 +11,38 @@ import numpy as np
 import pandas as pd
 
 from .config import BATCH_DIR
-from .storage import load_deleted_fault_event_ids, load_fault_actions, load_fault_event_log
+from .storage import (
+    load_deleted_fault_event_ids,
+    load_fault_actions,
+    load_fault_event_log,
+)
 
 
 FAULT_STATUSES = {"NG", "NG_REVIEW", "ANOMALY", "FAULT"}
 FAULT_EVENT_COLUMNS = [
+    "logged_at",
     "event_id",
     "detected_at",
     "origin",
     "source_file",
     "source_path",
     "mode",
+    "mode_display",
     "model_id",
+    "model_name",
     "model_version",
     "model_status",
+    "model_trigger",
+    "model_summary_json",
+    "model_details_json",
     "fault_type",
     "fault_confidence",
+    "fault_confidence_percent",
     "fault_probabilities",
     "severity",
     "rpn",
     "risk_level",
+    "risk_label",
     "risk_color",
     "pfmea_ng_codes",
     "suspect_sensors",
@@ -38,6 +50,7 @@ FAULT_EVENT_COLUMNS = [
     "suspect_cells",
     "detected_row",
     "fire_rate",
+    "fire_rate_percent",
     "score_p95",
     "score_max",
     "max_consecutive_rows",
@@ -49,6 +62,14 @@ FAULT_EVENT_COLUMNS = [
     "assignee",
     "action_notes",
     "action_updated_at",
+    "source_row_number",
+    "source_window_start_row",
+    "source_window_end_row",
+    "source_window_row_count",
+    "source_column_count",
+    "source_columns_json",
+    "source_row_json",
+    "source_window_json",
 ]
 
 
@@ -208,6 +229,167 @@ def _is_missing(value: Any) -> bool:
     return str(value).strip().lower() in {"", "nan", "none", "null"}
 
 
+def _json_safe_scalar(value: Any) -> Any:
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, np.generic):
+        value = value.item()
+    if hasattr(value, "isoformat") and not isinstance(value, str):
+        try:
+            return value.isoformat()
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _json_safe_object(value: Any) -> Any:
+    if isinstance(value, pd.DataFrame):
+        return [
+            {str(key): _json_safe_object(item) for key, item in record.items()}
+            for record in value.to_dict(orient="records")
+        ]
+    if isinstance(value, pd.Series):
+        return {str(key): _json_safe_object(item) for key, item in value.to_dict().items()}
+    if isinstance(value, dict):
+        return {str(key): _json_safe_object(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, np.ndarray)):
+        return [_json_safe_object(item) for item in list(value)]
+    return _json_safe_scalar(value)
+
+
+def _json_text(value: Any) -> str:
+    return json.dumps(
+        _json_safe_object(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _percent_text(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return ""
+    return f"{numeric:.1%}" if np.isfinite(numeric) else ""
+
+
+def _infer_detected_row(result: dict[str, Any]) -> int | None:
+    summary = dict(result.get("summary", {})) if isinstance(result.get("summary"), dict) else {}
+    details = dict(result.get("details", {})) if isinstance(result.get("details"), dict) else {}
+    for payload in [summary, details]:
+        for key in [
+            "detected_row",
+            "first_fault_row",
+            "first_anomaly_row",
+        ]:
+            value = payload.get(key)
+            try:
+                row_number = int(float(value))
+            except (TypeError, ValueError):
+                continue
+            if row_number >= 1:
+                return row_number
+
+    fault_by_row = details.get("fault_by_row", {})
+    if isinstance(fault_by_row, dict):
+        explicit_rows: list[int] = []
+        for row_key in fault_by_row:
+            try:
+                explicit_rows.append(int(float(str(row_key))))
+            except (TypeError, ValueError):
+                continue
+        valid_explicit_rows = [row for row in explicit_rows if row >= 1]
+        if valid_explicit_rows:
+            return min(valid_explicit_rows)
+
+    row_result = result.get("row_result")
+    if not isinstance(row_result, pd.DataFrame) or row_result.empty:
+        return None
+    if "predicted_anomaly" in row_result.columns:
+        flags = row_result["predicted_anomaly"].fillna(0).astype(bool)
+        matches = np.flatnonzero(flags.to_numpy())
+        if len(matches):
+            position = int(matches[0])
+            if "row_index" in row_result.columns:
+                try:
+                    return int(float(row_result.iloc[position]["row_index"]))
+                except (TypeError, ValueError):
+                    pass
+            return position + 1
+    if "score" in row_result.columns:
+        scores = pd.to_numeric(row_result["score"], errors="coerce")
+        if scores.notna().any():
+            position = int(np.nanargmax(scores.to_numpy(dtype=float)))
+            if "row_index" in row_result.columns:
+                try:
+                    return int(float(row_result.iloc[position]["row_index"]))
+                except (TypeError, ValueError):
+                    pass
+            return position + 1
+    try:
+        binary_window_end_row = int(float(details.get("binary_window_end_row")))
+    except (TypeError, ValueError):
+        binary_window_end_row = 0
+    if binary_window_end_row >= 1:
+        return binary_window_end_row
+    return None
+
+
+def source_snapshot_fields(
+    source_frame: pd.DataFrame | None,
+    *,
+    detected_row: int | None,
+    window_size: int = 1,
+) -> dict[str, Any]:
+    """Flatten the detection row and retain the full model-input window as JSON."""
+    if not isinstance(source_frame, pd.DataFrame) or source_frame.empty or detected_row is None:
+        return {}
+    try:
+        row_number = int(detected_row)
+    except (TypeError, ValueError):
+        return {}
+    if row_number < 1:
+        return {}
+
+    end_position = min(row_number, len(source_frame))
+    size = max(1, int(window_size))
+    start_position = max(0, end_position - size)
+    source_window = source_frame.iloc[start_position:end_position]
+    if source_window.empty:
+        return {}
+
+    source_columns = [str(column) for column in source_frame.columns]
+    source_row = source_window.iloc[-1]
+    source_row_record = {
+        str(column): _json_safe_scalar(value)
+        for column, value in source_row.items()
+    }
+    source_window_records = [
+        {str(column): _json_safe_scalar(value) for column, value in record.items()}
+        for record in source_window.to_dict(orient="records")
+    ]
+    flattened_row = {
+        f"raw__{column}": source_row_record.get(column)
+        for column in source_columns
+    }
+    return {
+        "source_row_number": end_position,
+        "source_window_start_row": start_position + 1,
+        "source_window_end_row": end_position,
+        "source_window_row_count": len(source_window),
+        "source_column_count": len(source_columns),
+        "source_columns_json": _json_text(source_columns),
+        "source_row_json": _json_text(source_row_record),
+        "source_window_json": _json_text(source_window_records),
+        **flattened_row,
+    }
+
+
 def _first(payloads: Iterable[dict[str, Any]], keys: Iterable[str], default: Any = None) -> Any:
     for payload in payloads:
         for key in keys:
@@ -365,6 +547,7 @@ def build_fault_event(
     *,
     source_file: str,
     source_path: str = "",
+    source_frame: pd.DataFrame | None = None,
     mode: str = "UNKNOWN",
     detected_at: str | None = None,
     detected_row: int | None = None,
@@ -376,6 +559,8 @@ def build_fault_event(
     status = str(status_override or summary.get("status", "")).upper()
     if status not in FAULT_STATUSES:
         return None
+    if detected_row is None:
+        detected_row = _infer_detected_row(result)
     detected = detected_at or datetime.now().isoformat(timespec="seconds")
     metadata_result = result
     details = dict(result.get("details", {})) if isinstance(result.get("details"), dict) else {}
@@ -389,23 +574,40 @@ def build_fault_event(
             }
     metadata = extract_fault_metadata(metadata_result)
     model_id = str(summary.get("model_id", ""))
+    model_name = str(summary.get("model_name", ""))
     model_version = str(summary.get("model_version", ""))
     event_id_parts = [origin, source_file, model_id, model_version, detected_row or 0, detected]
     if occurrence_key:
         event_id_parts.append(occurrence_key)
     event_id = _event_id(*event_id_parts)
-    return {
+    event_mode = str(summary.get("mode", mode)).upper()
+    try:
+        window_size = max(1, int(details.get("window_size", 1)))
+    except (TypeError, ValueError):
+        window_size = 1
+    snapshot = source_snapshot_fields(
+        source_frame,
+        detected_row=detected_row,
+        window_size=window_size,
+    )
+    event = {
         "event_id": event_id,
         "detected_at": detected,
         "origin": origin,
         "source_file": source_file,
         "source_path": source_path,
-        "mode": str(summary.get("mode", mode)).upper(),
+        "mode": event_mode,
+        "mode_display": display_mode(event_mode),
         "model_id": model_id,
+        "model_name": model_name,
         "model_version": model_version,
         "model_status": status,
+        "model_trigger": summary.get("trigger", ""),
+        "model_summary_json": _json_text(summary),
+        "model_details_json": _json_text(details),
         "detected_row": detected_row if detected_row is not None else np.nan,
         "fire_rate": summary.get("fire_rate", np.nan),
+        "fire_rate_percent": _percent_text(summary.get("fire_rate", np.nan)),
         "score_p95": summary.get("score_p95", np.nan),
         "score_max": summary.get("score_max", np.nan),
         "max_consecutive_rows": summary.get("max_consecutive_rows", np.nan),
@@ -415,7 +617,11 @@ def build_fault_event(
         "action_notes": "",
         "action_updated_at": "",
         **metadata,
+        **snapshot,
     }
+    event["fault_confidence_percent"] = _percent_text(event.get("fault_confidence"))
+    event["risk_label"] = f"위험도 {int(event.get('risk_level', 0) or 0)}"
+    return event
 
 
 def batch_fault_events(frame: pd.DataFrame, *, batch_id: str, detected_at: str) -> pd.DataFrame:
@@ -461,6 +667,23 @@ def load_fault_events(current_batch: pd.DataFrame | None = None) -> pd.DataFrame
     parts: list[pd.DataFrame] = []
     live_events = load_fault_event_log()
     if not live_events.empty:
+        live_events["fault_type"] = live_events["fault_type"].map(normalize_fault_type)
+        live_guides = pd.DataFrame(
+            [recommendation_for(fault_type) for fault_type in live_events["fault_type"]],
+            index=live_events.index,
+        )
+        for column in live_guides.columns:
+            live_events[column] = live_guides[column]
+        live_events["mode_display"] = live_events["mode"].map(display_mode)
+        live_events["risk_label"] = (
+            "위험도 "
+            + pd.to_numeric(live_events["risk_level"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+            .astype(str)
+        )
+        live_events["fault_confidence_percent"] = live_events["fault_confidence"].map(_percent_text)
+        live_events["fire_rate_percent"] = live_events["fire_rate"].map(_percent_text)
         parts.append(live_events)
 
     for csv_path in sorted(BATCH_DIR.glob("batch_result_*.csv")):
@@ -499,6 +722,16 @@ def load_fault_events(current_batch: pd.DataFrame | None = None) -> pd.DataFrame
     for column in refreshed_guides.columns:
         events[column] = refreshed_guides[column]
     events["mode"] = events["mode"].fillna("UNKNOWN").astype(str).str.upper()
+    events["mode_display"] = events["mode"].map(display_mode)
+    events["risk_label"] = (
+        "위험도 "
+        + pd.to_numeric(events["risk_level"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+        .astype(str)
+    )
+    events["fault_confidence_percent"] = events["fault_confidence"].map(_percent_text)
+    events["fire_rate_percent"] = events["fire_rate"].map(_percent_text)
     events = events.drop_duplicates(subset=["event_id"], keep="last")
     deleted_event_ids = load_deleted_fault_event_ids()
     if deleted_event_ids:
@@ -533,4 +766,10 @@ def load_fault_events(current_batch: pd.DataFrame | None = None) -> pd.DataFrame
         if column not in events.columns:
             events[column] = default
         events[column] = events[column].fillna(default)
-    return events[FAULT_EVENT_COLUMNS].sort_values("detected_at", ascending=False).reset_index(drop=True)
+    ordered_columns = [column for column in FAULT_EVENT_COLUMNS if column in events.columns]
+    extra_columns = [column for column in events.columns if column not in ordered_columns]
+    return (
+        events[ordered_columns + extra_columns]
+        .sort_values("detected_at", ascending=False)
+        .reset_index(drop=True)
+    )

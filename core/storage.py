@@ -98,6 +98,12 @@ def load_fault_event_log() -> pd.DataFrame:
     return pd.read_csv(path, encoding="utf-8-sig")
 
 
+def save_fault_event_log(frame: pd.DataFrame) -> Path:
+    path = fault_event_log_path()
+    _atomic_write_csv(frame, path)
+    return path
+
+
 def upsert_fault_event(record: dict[str, Any]) -> Path:
     event = {
         "logged_at": datetime.now().isoformat(timespec="seconds"),
@@ -129,6 +135,24 @@ def append_fault_action(record: dict[str, Any]) -> Path:
     updated = pd.concat([existing, pd.DataFrame([action])], ignore_index=True)
     path = fault_action_log_path()
     _atomic_write_csv(updated, path)
+
+    event_id = str(action.get("event_id", "")).strip()
+    events = load_fault_event_log()
+    if event_id and not events.empty and "event_id" in events.columns:
+        event_mask = events["event_id"].astype(str).eq(event_id)
+        if event_mask.any():
+            event_updates = {
+                "action_status": action.get("action_status", ""),
+                "final_action": action.get("final_action", ""),
+                "assignee": action.get("assignee", ""),
+                "action_notes": action.get("action_notes", ""),
+                "action_updated_at": action["updated_at"],
+            }
+            for column, value in event_updates.items():
+                if column not in events.columns:
+                    events[column] = ""
+                events.loc[event_mask, column] = value
+            save_fault_event_log(events)
     return path
 
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 
 import pandas as pd
@@ -109,6 +110,7 @@ def main() -> None:
             "max_consecutive_rows": 18,
         },
         "details": {
+            "window_size": 100,
             "fault_type": "temperature sensor",
             "fault_probabilities": {
                 "temperature sensor": 0.92,
@@ -125,6 +127,15 @@ def main() -> None:
     fault_event = build_fault_event(
         synthetic_result,
         source_file="Test09_NG_dchg.csv",
+        source_frame=pd.DataFrame(
+            {
+                "SerialNumber": [798] * 120,
+                "DATE": ["2021-11-02"] * 120,
+                "TIME": [f"08:42:{second:02d}" for second in range(60)] * 2,
+                "M01CV01": [4.1 - index * 0.001 for index in range(120)],
+                "M01T01": [30.0 + index * 0.01 for index in range(120)],
+            }
+        ),
         detected_row=120,
         detected_at="2021-11-02 08:42:43",
         origin="smoke",
@@ -137,6 +148,18 @@ def main() -> None:
     assert fault_event["risk_color"] == "노랑"
     assert fault_event["severity"] == "주의"
     assert display_mode(fault_event["mode"]) == "방전"
+    assert fault_event["mode_display"] == "방전"
+    assert fault_event["risk_label"] == "위험도 1"
+    assert fault_event["fault_confidence_percent"] == "92.0%"
+    assert fault_event["fire_rate_percent"] == "25.0%"
+    assert fault_event["source_row_number"] == 120
+    assert fault_event["source_window_start_row"] == 21
+    assert fault_event["source_window_end_row"] == 120
+    assert fault_event["source_window_row_count"] == 100
+    assert fault_event["source_column_count"] == 5
+    assert fault_event["raw__SerialNumber"] == 798
+    assert abs(fault_event["raw__M01CV01"] - 3.981) < 1e-12
+    assert len(json.loads(fault_event["source_window_json"])) == 100
     assert display_mode("CHG") == "충전"
     assert recommendation_for("용량 불량")["risk_level"] == 1
     assert recommendation_for("용량 불량")["risk_color"] == "노랑"

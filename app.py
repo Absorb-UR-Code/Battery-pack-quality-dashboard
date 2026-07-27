@@ -1242,6 +1242,7 @@ with tab_live:
                             live_model_result,
                             source_file=selected_record["file_name"],
                             source_path=str(selected_record["path"]),
+                            source_frame=live_df,
                             mode=str(selected_record["mode"]),
                             detected_at=live_time_labels.iloc[event_row - 1],
                             detected_row=event_row,
@@ -1843,6 +1844,7 @@ with tab_daily:
                         result,
                         source_file=selected_record["file_name"],
                         source_path=str(selected_record["path"]),
+                        source_frame=frame,
                         mode=str(selected_record["mode"]),
                         origin="파일 판정",
                     )
