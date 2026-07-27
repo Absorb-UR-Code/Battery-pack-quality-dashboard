@@ -20,6 +20,12 @@
       overflow: hidden;
       background: transparent;
     }
+    iframe.is-loading {
+      position: absolute;
+      inset: 0 auto auto 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -30,8 +36,9 @@
   ></iframe>
 
   <script>
-    const frame = document.getElementById("workspace-frame");
+    let frame = document.getElementById("workspace-frame");
     let currentHtml = null;
+    let currentStorageKey = null;
     let resizeObserver = null;
     let mutationObserver = null;
     let scheduledFrame = null;
@@ -96,18 +103,88 @@
       scheduleMeasure();
     }
 
+    function parseDocument(html) {
+      const payloadMarkers = ["let payload = ", "const payload = "];
+      const payloadMarker = payloadMarkers.find(marker => html.includes(marker));
+      if (!payloadMarker) return null;
+
+      const payloadStart = html.indexOf(payloadMarker) + payloadMarker.length;
+      const payloadEnd = html.indexOf(";\nconst storageKey = ", payloadStart);
+      if (payloadEnd < 0) return null;
+
+      const storageStartMarker = "const storageKey = ";
+      const storageStart = html.indexOf(storageStartMarker, payloadEnd) + storageStartMarker.length;
+      const storageEnd = html.indexOf(";\nconst metricOrder", storageStart);
+      if (storageStart < storageStartMarker.length || storageEnd < 0) return null;
+
+      try {
+        return {
+          payload: JSON.parse(html.slice(payloadStart, payloadEnd)),
+          storageKey: JSON.parse(html.slice(storageStart, storageEnd)),
+        };
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function activateFrame(nextFrame) {
+      const previousFrame = frame;
+      disconnectObservers();
+      frame = nextFrame;
+      frame.classList.remove("is-loading");
+      frame.id = "workspace-frame";
+      previousFrame.remove();
+      observeContent();
+    }
+
+    function replaceDocumentWithoutBlank(html) {
+      const nextFrame = document.createElement("iframe");
+      nextFrame.className = "is-loading";
+      nextFrame.title = "팩 운전 신호 작업 영역";
+      nextFrame.scrolling = "no";
+      nextFrame.style.width = "100%";
+      nextFrame.style.height = frame.style.height || "1px";
+      nextFrame.style.border = "0";
+      nextFrame.style.overflow = "hidden";
+      nextFrame.style.background = "transparent";
+      frame.insertAdjacentElement("afterend", nextFrame);
+      nextFrame.onload = () => activateFrame(nextFrame);
+      nextFrame.srcdoc = html;
+    }
+
     function render(args) {
       const html = args && typeof args.html === "string" ? args.html : "";
+      const parsed = parseDocument(html);
 
       if (html === currentHtml && frame.contentDocument) {
         scheduleMeasure();
         return;
       }
 
+      if (
+        currentHtml !== null
+        && parsed
+        && parsed.storageKey === currentStorageKey
+        && frame.contentWindow
+      ) {
+        currentHtml = html;
+        frame.contentWindow.postMessage(
+          { type: "battery-pack:kpi-update", payload: parsed.payload },
+          "*"
+        );
+        scheduleMeasure();
+        return;
+      }
+
       currentHtml = html;
-      disconnectObservers();
-      frame.onload = observeContent;
-      frame.srcdoc = html;
+      currentStorageKey = parsed ? parsed.storageKey : null;
+      if (frame.contentDocument && frame.contentDocument.body && frame.contentDocument.body.childNodes.length) {
+        replaceDocumentWithoutBlank(html);
+      } else {
+        disconnectObservers();
+        frame.onload = observeContent;
+        frame.srcdoc = html;
+      }
     }
 
     window.addEventListener("message", event => {

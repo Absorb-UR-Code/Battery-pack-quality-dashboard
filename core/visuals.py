@@ -508,7 +508,7 @@ def draggable_kpi_workspace_html(
   <div id="workspace" class="workspace" aria-label="팩 운전 신호 작업영역"></div>
 </div>
 <script>
-const payload = __KPI_DATA__;
+let payload = __KPI_DATA__;
 const storageKey = __STORAGE_KEY__;
 const metricOrder = ["cv_mean","cv_std","temp_mean","temp_range","temp_std"];
 const voltageKeys = new Set(["cv_mean","cv_std"]);
@@ -713,6 +713,13 @@ function renderCards() {
   voltage.replaceChildren(); temperature.replaceChildren();
   metricOrder.forEach(metric => (voltageKeys.has(metric) ? voltage : temperature).appendChild(makeCard(metric)));
 }
+function updatePayload(nextPayload) {
+  if (!nextPayload || typeof nextPayload !== "object" || !nextPayload.metrics) return;
+  payload = nextPayload;
+  layout = normalizeLayout(layout);
+  renderCards();
+  renderWorkspace();
+}
 function renderWorkspace(showDropRows=false) {
   workspace.replaceChildren();
   if (!activeMetrics().length && !showDropRows) {
@@ -797,7 +804,11 @@ document.addEventListener("drop", event => {
   if (dragging && dragging.type === "panel" && !workspace.contains(event.target)) removeMetric(dragging.metric);
   document.body.classList.remove("layout-dragging");
 });
-window.__kpiWorkspace = {add:addMetric, remove:removeMetric};
+window.addEventListener("message", event => {
+  const message = event.data || {};
+  if (message.type === "battery-pack:kpi-update") updatePayload(message.payload);
+});
+window.__kpiWorkspace = {add:addMetric, remove:removeMetric, updatePayload};
 renderCards(); renderWorkspace();
 </script>
 </body>

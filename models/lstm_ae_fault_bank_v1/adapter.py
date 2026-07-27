@@ -128,17 +128,22 @@ def _reconstruction_errors(
     row_count = len(scaled)
     endpoints = np.arange(WINDOW - 1, row_count, STRIDE, dtype=int)
     errors = np.empty((len(endpoints), len(models)), dtype=np.float32)
+    windows = np.lib.stride_tricks.sliding_window_view(
+        scaled,
+        window_shape=WINDOW,
+        axis=0,
+    ).transpose(0, 2, 1)[::STRIDE]
 
     for batch_start in range(0, len(endpoints), INFERENCE_BATCH_SIZE):
         batch_endpoints = endpoints[batch_start : batch_start + INFERENCE_BATCH_SIZE]
-        windows = np.stack(
-            [scaled[end - WINDOW + 1 : end + 1] for end in batch_endpoints],
-            axis=0,
-        ).astype(np.float32, copy=False)
+        batch_windows = np.ascontiguousarray(
+            windows[batch_start : batch_start + len(batch_endpoints)],
+            dtype=np.float32,
+        )
         for model_index, model in enumerate(models):
-            reconstruction = np.asarray(model(windows, training=False))
+            reconstruction = np.asarray(model(batch_windows, training=False))
             errors[batch_start : batch_start + len(batch_endpoints), model_index] = np.mean(
-                (windows - reconstruction) ** 2,
+                (batch_windows - reconstruction) ** 2,
                 axis=(1, 2),
             )
     return errors, endpoints

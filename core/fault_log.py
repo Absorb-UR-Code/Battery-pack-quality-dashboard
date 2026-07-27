@@ -29,6 +29,10 @@ FAULT_EVENT_COLUMNS = [
     "fault_confidence",
     "fault_probabilities",
     "severity",
+    "rpn",
+    "risk_level",
+    "risk_color",
+    "pfmea_ng_codes",
     "suspect_sensors",
     "suspect_modules",
     "suspect_cells",
@@ -78,53 +82,122 @@ FAULT_TYPE_ALIASES = {
 }
 
 
-ACTION_GUIDE = {
-    "용량 불량": (
-        "용량 재시험",
-        "재시험 후 기준 미달 시 출하 제외",
-        "동일 조건 충·방전으로 용량과 에너지 유지율을 재확인합니다.",
-    ),
-    "복합 불량": (
-        "출하 보류 및 복합 진단",
-        "원인별 재작업 후 전체 충·방전 재시험",
-        "용량·접촉·센서 계통이 함께 의심되므로 단일 부품 교체 전에 원인 분리 진단을 수행합니다.",
-    ),
-    "용접·접촉 불량": (
-        "출하 보류 및 접합부 점검",
-        "재작업 후 전압강하·발열 재검사",
-        "접촉저항 증가 가능성이 있으므로 버스바와 용접부를 우선 점검합니다.",
-    ),
-    "센싱와이어 불량": (
-        "하네스 점검 후 재계측",
-        "배선 수리 또는 교체 후 재시험",
-        "센싱와이어 단선·접촉 불량과 커넥터 체결 상태를 확인합니다.",
-    ),
-    "온도 센서 불량": (
-        "온도 센서 교차검증",
-        "센서 교체 후 재시험",
-        "인접 센서와 기준 온도계로 오프셋 또는 단선 여부를 확인합니다.",
-    ),
-    "전압 센서 불량": (
-        "전압 센싱 회로 재계측",
-        "센싱 회로 수리 후 재시험",
-        "독립 계측기와 비교해 센서·배선·BMS 입력 회로를 분리 점검합니다.",
-    ),
-    "열 관리 이상": (
-        "팩 격리 및 냉각계통 점검",
-        "원인 해소와 열 안정성 확인 전 출하 보류",
-        "국부 발열, 냉각 유량, 열접촉 및 센서 위치를 함께 확인합니다.",
-    ),
-    "내부 단락·안전 위험": (
-        "즉시 격리",
-        "안전 절차에 따른 폐기 검토",
-        "추가 충·방전을 중지하고 안전 담당자의 승인 절차를 적용합니다.",
-    ),
-    "유형 분석 대기": (
-        "격리 후 유형 분류 및 재시험",
-        "자동 폐기 금지·담당자 검토 필요",
-        "이진 불량 판정만 존재하므로 유형 분류와 원시 센서 확인이 필요합니다.",
-    ),
+PFMEA_GUIDE = {
+    "용량 불량": {
+        "pfmea_ng_codes": "NG5",
+        "rpn_values": [84, 42, 63],
+        "recommended_action": (
+            "샘플링 비율 상향 및 배치별 grade 분리 · 인터락 강화 및 알람 도입 · "
+            "매칭 알고리즘 tolerance 재산정"
+        ),
+        "disposition_guide": "PFMEA 권고 조치 후 용량 재시험, 기준 미달 시 출하 보류",
+    },
+    "용접·접촉 불량": {
+        "pfmea_ng_codes": "NG6",
+        "rpn_values": [96, 63, 84, 54],
+        "recommended_action": (
+            "Power 관리 강화 및 검교정 주기 단축 · 지그 마모 주기 자동 관리 · "
+            "체결 토크 자동 관리 및 이력 기록 · 세정 자동화 검토"
+        ),
+        "disposition_guide": "접합부 재작업 및 PFMEA 권고 조치 후 전압강하·발열 재검사",
+    },
+    "센싱와이어 불량": {
+        "pfmea_ng_codes": "NG7",
+        "rpn_values": [96, 54, 72, 96, 63],
+        "recommended_action": (
+            "outlier 자동 격리 시스템 구축 · IQC 자동화 시스템 도입 · 체결 확인 인터락 추가 · "
+            "체결 토크 표준화 및 이력 관리 · 라우팅 지그 필수화"
+        ),
+        "disposition_guide": "배선·체결 상태를 보정하고 PFMEA 권고 조치 후 센서 재계측",
+    },
+    "온도 센서 불량": {
+        "pfmea_ng_codes": "NG8, NG9",
+        "rpn_values": [72, 96, 168, 63, 72, 63, 54],
+        "recommended_action": (
+            "도포량 정량화 및 자동 도포 검토 · 센서 수명 관리 시스템 구축 · "
+            "레시피 자동 로딩 및 이중 확인 · 지그 및 부착 지그 정밀도 상향 · "
+            "충진·탈기 자동화 검토 · 항온 챔버 도입 검토"
+        ),
+        "disposition_guide": "즉시 출하 보류 후 센서·레시피·지그를 점검하고 정상 확인 시 재시험",
+    },
+    "전압 센서 불량": {
+        "pfmea_ng_codes": "NG7",
+        "rpn_values": [96, 54, 72, 96, 63],
+        "recommended_action": (
+            "outlier 자동 격리 시스템 구축 · IQC 자동화 시스템 도입 · 체결 확인 인터락 추가 · "
+            "체결 토크 표준화 및 이력 관리 · 라우팅 지그 필수화"
+        ),
+        "disposition_guide": "센싱 회로와 체결 상태를 보정하고 PFMEA 권고 조치 후 재계측",
+    },
+    "열 관리 이상": {
+        "pfmea_ng_codes": "NG9",
+        "rpn_values": [63, 72, 63, 54],
+        "recommended_action": (
+            "지그 정밀도 상향 · 부착 지그 정밀도 상향 · 충진·탈기 자동화 검토 · "
+            "항온 챔버 도입 검토"
+        ),
+        "disposition_guide": "열 안정성과 냉각 조건 확인 전 출하 보류",
+    },
+    "복합 불량": {
+        "pfmea_ng_codes": "ALL",
+        "rpn_values": [180, 168, 120],
+        "recommended_action": "AI 자동 판정 시스템 도입 · 관련 NG 유형별 PFMEA 권고 조치 병행",
+        "disposition_guide": "즉시 출하 보류 후 원인별 조치와 전체 충·방전 재시험",
+    },
+    "내부 단락·안전 위험": {
+        "pfmea_ng_codes": "ALL",
+        "rpn_values": [180, 168, 120],
+        "recommended_action": "AI 자동 판정 시스템 도입 · 안전 절차에 따른 즉시 격리 및 전문 진단",
+        "disposition_guide": "추가 충·방전 금지, 안전 담당자 승인 전 이동·출하 금지",
+    },
+    "유형 분석 대기": {
+        "pfmea_ng_codes": "미매핑",
+        "rpn_values": [0],
+        "recommended_action": "격리 후 불량 유형 분류 및 Pack_PFMEA 항목 매핑",
+        "disposition_guide": "자동 폐기 금지, 담당자 검토 후 조치 결정",
+    },
 }
+
+
+MODE_DISPLAY = {
+    "CHG": "충전",
+    "DCHG": "방전",
+    "UNKNOWN": "미분류",
+    "ALL": "충·방전",
+}
+
+
+def display_mode(value: Any) -> str:
+    """Return an operator-facing Korean label while retaining mode codes internally."""
+    if _is_missing(value):
+        return "미분류"
+    text = str(value).strip()
+    return MODE_DISPLAY.get(text.upper(), text)
+
+
+def _risk_from_rpn(rpn: int | float) -> tuple[int, str, str]:
+    """Map Pack_PFMEA fill bands to dashboard risk levels."""
+    numeric = float(rpn)
+    if numeric >= 120:
+        return 2, "빨강", "높음"
+    if numeric >= 60:
+        return 1, "노랑", "주의"
+    return 0, "흰색", "낮음"
+
+
+def _second_highest_distinct(values: Iterable[Any]) -> tuple[int, int]:
+    """Return (selected, excluded_max) using the next distinct RPN below the maximum."""
+    ordered = sorted(
+        {
+            int(float(value))
+            for value in values
+            if not _is_missing(value) and np.isfinite(float(value))
+        },
+        reverse=True,
+    )
+    if not ordered:
+        return 0, 0
+    return (ordered[1] if len(ordered) > 1 else ordered[0]), ordered[0]
 
 
 def _is_missing(value: Any) -> bool:
@@ -214,15 +287,25 @@ def _locations_from_sensors(sensors: list[str]) -> tuple[list[str], list[str]]:
     return modules, cells
 
 
-def recommendation_for(fault_type: str) -> dict[str, str]:
-    action, disposition, reason = ACTION_GUIDE.get(
-        normalize_fault_type(fault_type),
-        ACTION_GUIDE["유형 분석 대기"],
-    )
+def recommendation_for(fault_type: str) -> dict[str, Any]:
+    normalized = normalize_fault_type(fault_type)
+    guide = PFMEA_GUIDE.get(normalized, PFMEA_GUIDE["유형 분석 대기"])
+    rpn, excluded_max_rpn = _second_highest_distinct(guide["rpn_values"])
+    risk_level, risk_color, severity = _risk_from_rpn(rpn)
+    ng_codes = str(guide["pfmea_ng_codes"])
     return {
-        "recommended_action": action,
-        "disposition_guide": disposition,
-        "recommendation_reason": reason,
+        "recommended_action": str(guide["recommended_action"]),
+        "disposition_guide": str(guide["disposition_guide"]),
+        "recommendation_reason": (
+            f"FMEA_배터리팩.xlsx의 Pack_PFMEA {ng_codes} 관련 RPN에서 "
+            f"최댓값 {excluded_max_rpn}을 제외하고 두 번째로 큰 서로 다른 값 "
+            f"RPN {rpn}({risk_color})을 적용했습니다."
+        ),
+        "rpn": rpn,
+        "risk_level": risk_level,
+        "risk_color": risk_color,
+        "pfmea_ng_codes": ng_codes,
+        "severity": severity,
     }
 
 
@@ -260,14 +343,11 @@ def extract_fault_metadata(result: dict[str, Any]) -> dict[str, Any]:
     modules = list(dict.fromkeys(modules + inferred_modules))
     cells = list(dict.fromkeys(cells + inferred_cells))
 
-    raw_severity = _first(payloads, ["severity", "fault_severity", "risk_level"])
-    severity = str(raw_severity).strip() if not _is_missing(raw_severity) else "검토 필요"
     guide = recommendation_for(fault_type)
     return {
         "fault_type": fault_type,
         "fault_confidence": confidence,
         "fault_probabilities": json.dumps(probabilities, ensure_ascii=False),
-        "severity": severity,
         "suspect_sensors": ", ".join(sensors),
         "suspect_modules": ", ".join(modules),
         "suspect_cells": ", ".join(cells),
@@ -411,6 +491,14 @@ def load_fault_events(current_batch: pd.DataFrame | None = None) -> pd.DataFrame
     for column in FAULT_EVENT_COLUMNS:
         if column not in events.columns:
             events[column] = ""
+    events["fault_type"] = events["fault_type"].map(normalize_fault_type)
+    refreshed_guides = pd.DataFrame(
+        [recommendation_for(fault_type) for fault_type in events["fault_type"]],
+        index=events.index,
+    )
+    for column in refreshed_guides.columns:
+        events[column] = refreshed_guides[column]
+    events["mode"] = events["mode"].fillna("UNKNOWN").astype(str).str.upper()
     events = events.drop_duplicates(subset=["event_id"], keep="last")
     deleted_event_ids = load_deleted_fault_event_ids()
     if deleted_event_ids:

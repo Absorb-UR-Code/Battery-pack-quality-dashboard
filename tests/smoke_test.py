@@ -16,7 +16,14 @@ from core.diagnostic_display import (
     reached_fault_payloads,
 )
 from core.features import build_row_features, build_sensor_kpis, sensor_snapshot_matrix
-from core.fault_log import batch_fault_events, build_fault_event, extract_fault_metadata, parse_probabilities
+from core.fault_log import (
+    batch_fault_events,
+    build_fault_event,
+    display_mode,
+    extract_fault_metadata,
+    parse_probabilities,
+    recommendation_for,
+)
 from core.kpi_workspace_component import _COMPONENT_DIR
 from core.model_registry import discover_models
 from core.visuals import draggable_kpi_workspace_html
@@ -86,6 +93,9 @@ def main() -> None:
     assert "streamlit:setFrameHeight" in component_html
     assert "ResizeObserver" in component_html
     assert 'doc.querySelector(".shell")' in component_html
+    assert "battery-pack:kpi-update" in component_html
+    assert "replaceDocumentWithoutBlank" in component_html
+    assert "frame.contentWindow.postMessage" in component_html
 
     synthetic_result = {
         "summary": {
@@ -120,7 +130,18 @@ def main() -> None:
         origin="smoke",
     )
     assert fault_event is not None
-    assert fault_event["recommended_action"] == "온도 센서 교차검증"
+    assert "레시피 자동 로딩 및 이중 확인" in fault_event["recommended_action"]
+    assert fault_event["pfmea_ng_codes"] == "NG8, NG9"
+    assert fault_event["rpn"] == 96
+    assert fault_event["risk_level"] == 1
+    assert fault_event["risk_color"] == "노랑"
+    assert fault_event["severity"] == "주의"
+    assert display_mode(fault_event["mode"]) == "방전"
+    assert display_mode("CHG") == "충전"
+    assert recommendation_for("용량 불량")["risk_level"] == 1
+    assert recommendation_for("용량 불량")["risk_color"] == "노랑"
+    assert recommendation_for("유형 분석 대기")["risk_level"] == 0
+    assert recommendation_for("유형 분석 대기")["risk_color"] == "흰색"
     repeated_fault_event = build_fault_event(
         synthetic_result,
         source_file="Test09_NG_dchg.csv",
@@ -175,6 +196,9 @@ def main() -> None:
         assert "row-meta" not in workspace_html
         assert "workspace-placeholder" in workspace_html
         assert "renderWorkspace(true)" in workspace_html
+        assert "let payload =" in workspace_html
+        assert "function updatePayload(nextPayload)" in workspace_html
+        assert 'message.type === "battery-pack:kpi-update"' in workspace_html
         assert "wide ? 1440 : 720" in workspace_html
         assert "makePanel(metric,metrics.length === 1)" in workspace_html
         assert ".remove-zone { display:none; }" in workspace_html

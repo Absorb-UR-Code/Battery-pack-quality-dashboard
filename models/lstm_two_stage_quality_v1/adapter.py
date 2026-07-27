@@ -119,13 +119,18 @@ def _predict_stage1_rows(model: Any, scaled: np.ndarray) -> tuple[np.ndarray, np
     row_count = len(scaled)
     scores = np.full(row_count, np.nan, dtype=float)
     endpoints = np.arange(WINDOW - 1, row_count, dtype=int)
+    windows = np.lib.stride_tricks.sliding_window_view(
+        scaled,
+        window_shape=WINDOW,
+        axis=0,
+    ).transpose(0, 2, 1)
     for batch_start in range(0, len(endpoints), INFERENCE_BATCH_SIZE):
         batch_endpoints = endpoints[batch_start : batch_start + INFERENCE_BATCH_SIZE]
-        windows = np.stack(
-            [scaled[end - WINDOW + 1 : end + 1] for end in batch_endpoints],
-            axis=0,
-        ).astype(np.float32, copy=False)
-        batch_scores = np.asarray(model(windows, training=False)).reshape(-1)
+        batch_windows = np.ascontiguousarray(
+            windows[batch_start : batch_start + len(batch_endpoints)],
+            dtype=np.float32,
+        )
+        batch_scores = np.asarray(model(batch_windows, training=False)).reshape(-1)
         scores[batch_endpoints] = batch_scores
     return scores, endpoints
 
@@ -238,10 +243,15 @@ def predict(df: pd.DataFrame, context: dict[str, Any]) -> dict[str, Any]:
             valid_predictions & ~np.r_[False, valid_predictions[:-1]]
         )
         run_start_endpoints = endpoints[run_start_positions]
-        run_windows = np.stack(
-            [scaled[end - WINDOW + 1 : end + 1] for end in run_start_endpoints],
+        all_windows = np.lib.stride_tricks.sliding_window_view(
+            scaled,
+            window_shape=WINDOW,
             axis=0,
-        ).astype(np.float32, copy=False)
+        ).transpose(0, 2, 1)
+        run_windows = np.ascontiguousarray(
+            all_windows[run_start_positions],
+            dtype=np.float32,
+        )
         run_probabilities = np.asarray(stage2_model(run_windows, training=False))
         details["fault_by_row"] = {
             str(int(endpoint) + 1): _fault_payload(

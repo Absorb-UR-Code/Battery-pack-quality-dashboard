@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 import html
-import importlib
 import io
 import json
 from pathlib import Path
@@ -14,10 +13,6 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from core import config as _config
-
-_config = importlib.reload(_config)
-
 from core.config import APP_ROOT, MODEL_DIR, load_settings, save_settings
 from core.data_catalog import (
     audit_data_quality,
@@ -26,10 +21,6 @@ from core.data_catalog import (
     read_csv_resilient,
     resolve_time_axis,
 )
-from core import diagnostic_display as _diagnostic_display
-
-_diagnostic_display = importlib.reload(_diagnostic_display)
-
 from core.diagnostic_display import (
     build_normal_reference,
     fault_domain_coverage,
@@ -40,11 +31,13 @@ from core.diagnostic_display import (
     sensor_matrix_styler,
 )
 from core.features import build_sensor_kpis, module_temperature_summary, sensor_deviation_ranking, sensor_snapshot_matrix
-from core import storage as _storage
-
-_storage = importlib.reload(_storage)
-
-from core.fault_log import build_fault_event, extract_fault_metadata, load_fault_events, parse_probabilities
+from core.fault_log import (
+    build_fault_event,
+    display_mode,
+    extract_fault_metadata,
+    load_fault_events,
+    parse_probabilities,
+)
 from core.kpi_workspace_component import render_kpi_workspace
 from core.model_registry import ModelSpec, discover_models, model_inventory, score_dataframe
 from core.storage import (
@@ -58,10 +51,6 @@ from core.storage import (
     save_uploads,
     upsert_fault_event,
 )
-from core import visuals as _visuals
-
-_visuals = importlib.reload(_visuals)
-
 from core.visuals import (
     AMBER,
     GRAPHITE,
@@ -176,6 +165,10 @@ button[data-testid="stBaseButton-primary"]:hover,
   background-color: var(--teal) !important;
   border-color: var(--teal) !important;
 }
+/* Keep the previous frame fully visible while Streamlit replaces fragment data. */
+[data-stale="true"] {
+  opacity: 1 !important;
+}
 [data-testid="stSidebar"] { background: #182321; border-right: 1px solid #2d3b38; }
 [data-testid="stSidebar"] * { color: #f3f7f6; }
 [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stCaption { color: #c7d2cf !important; }
@@ -253,13 +246,13 @@ def cached_catalog(settings_json: str) -> pd.DataFrame:
     return build_catalog(settings.get("data_sources", []))
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, persist="disk", max_entries=24)
 def cached_read_csv(path_text: str, modified_ns: int) -> pd.DataFrame:
     del modified_ns
     return read_csv_resilient(Path(path_text))
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, persist="disk", max_entries=8)
 def cached_normal_reference(
     records_json: str,
     reference_schema: str = "sensor_residual_v2",
@@ -269,9 +262,35 @@ def cached_normal_reference(
     return build_normal_reference(records)
 
 
+@st.cache_data(show_spinner=False, persist="disk", max_entries=16)
+def cached_model_score(
+    spec_json: str,
+    path_text: str,
+    modified_ns: int,
+    source_file: str,
+) -> dict[str, object]:
+    """Reuse deterministic file-level inference across tabs, reruns, and restarts."""
+    del modified_ns
+    spec_payload = json.loads(spec_json)
+    spec_payload["supported_modes"] = tuple(spec_payload.get("supported_modes", ()))
+    spec = ModelSpec(**spec_payload)
+    frame = cached_read_csv(path_text, Path(path_text).stat().st_mtime_ns)
+    return score_dataframe(spec, frame, source_file)
+
+
 def load_path(path_text: str) -> pd.DataFrame:
     path = Path(path_text)
     return cached_read_csv(str(path), path.stat().st_mtime_ns)
+
+
+def load_model_score(spec: ModelSpec, record: pd.Series) -> dict[str, object]:
+    path = Path(str(record["path"]))
+    return cached_model_score(
+        json.dumps(spec.to_dict(), ensure_ascii=False, sort_keys=True),
+        str(path),
+        path.stat().st_mtime_ns,
+        str(record["file_name"]),
+    )
 
 
 def status_html(status: str, label: str | None = None) -> str:
@@ -652,7 +671,7 @@ def operational_event_log(
 
 
 def record_label(row: pd.Series) -> str:
-    return f"[{row['source_name']}] {row['file_name']} · {row['mode']} · {row['rows']:,}행"
+    return f"[{row['source_name']}] {row['file_name']} · {display_mode(row['mode'])} · {row['rows']:,}행"
 
 
 def translated_catalog(frame: pd.DataFrame) -> pd.DataFrame:
@@ -660,7 +679,7 @@ def translated_catalog(frame: pd.DataFrame) -> pd.DataFrame:
         "source_name": "데이터 소스",
         "source_role": "역할",
         "file_name": "파일",
-        "mode": "모드",
+        "mode": "충·방전",
         "label_hint": "라벨 힌트",
         "schema": "스키마",
         "rows": "행 수",
@@ -673,7 +692,31 @@ def translated_catalog(frame: pd.DataFrame) -> pd.DataFrame:
         "issue": "이슈",
     }
     shown = [c for c in columns if c in frame.columns]
-    return frame[shown].rename(columns=columns)
+    translated = frame[shown].copy()
+    if "mode" in translated.columns:
+        translated["mode"] = translated["mode"].map(display_mode)
+    return translated.rename(columns=columns)
+
+
+def pfmea_risk_label(value: object) -> str:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return f"위험도 {int(numeric)}" if np.isfinite(numeric) else "위험도 0"
+
+
+def pfmea_fault_table_styler(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
+    """Color only the PFMEA risk cells using the workbook's red/yellow/white bands."""
+
+    def style_row(row: pd.Series) -> list[str]:
+        risk_text = str(row.get("위험도", "위험도 0"))
+        if risk_text.endswith("2"):
+            style = "background-color:#FECACA;color:#991B1B;font-weight:700;"
+        elif risk_text.endswith("1"):
+            style = "background-color:#FEF3C7;color:#854D0E;font-weight:700;"
+        else:
+            style = "background-color:#FFFFFF;color:#172220;font-weight:600;"
+        return [style if column in {"위험도", "RPN"} else "" for column in row.index]
+
+    return frame.style.apply(style_row, axis=1)
 
 
 def translated_reviews(frame: pd.DataFrame) -> pd.DataFrame:
@@ -898,8 +941,10 @@ with st.sidebar:
         "한 번에 진행할 행",
         min_value=1,
         max_value=30,
-        value=5,
+        value=1,
         step=1,
+        key="live_step_size_v2",
+        help="실시간 측정처럼 기본적으로 한 행씩 진행합니다.",
     )
     live_refresh_seconds = st.slider(
         "자동 재생 간격(초)",
@@ -924,26 +969,6 @@ with st.sidebar:
         f"CSV {len(catalog):,}개 · 운영 모델 {len(operational_models):,}개 · "
         f"검증 후보 {len(candidate_models):,}개"
     )
-
-
-reference_records = []
-if not readable_catalog.empty and "source_role" in readable_catalog.columns:
-    for _, record in readable_catalog[readable_catalog["source_role"].eq("train")].iterrows():
-        reference_records.append(
-            {
-                "path": str(record["path"]),
-                "mode": str(record.get("mode", "UNKNOWN")),
-                "modified_at": str(record.get("modified_at", "")),
-            }
-        )
-normal_reference = (
-    cached_normal_reference(
-        json.dumps(reference_records, ensure_ascii=False, sort_keys=True),
-        "sensor_residual_v2",
-    )
-    if reference_records
-    else {}
-)
 
 
 if active_model is None:
@@ -980,9 +1005,29 @@ tab_live_visual, tab_live, tab_daily, tab_fault, tab_data_status, tab_models, ta
     ["실시간", "실시간 요약", "일별 로그", "불량 로그", "데이터 현황", "모델 관리", "학습 이력"],
     key="main_dashboard_tabs",
     default="실시간",
+    on_change="rerun",
 )
 tab_diagnosis = tab_data_status
 tab_review = tab_daily
+
+reference_records = []
+if (tab_live.open or tab_daily.open) and not readable_catalog.empty and "source_role" in readable_catalog.columns:
+    for _, record in readable_catalog[readable_catalog["source_role"].eq("train")].iterrows():
+        reference_records.append(
+            {
+                "path": str(record["path"]),
+                "mode": str(record.get("mode", "UNKNOWN")),
+                "modified_at": str(record.get("modified_at", "")),
+            }
+        )
+normal_reference = (
+    cached_normal_reference(
+        json.dumps(reference_records, ensure_ascii=False, sort_keys=True),
+        "sensor_residual_v2",
+    )
+    if reference_records
+    else {}
+)
 
 if selected_record is not None:
     ops_model_signature = (
@@ -1012,8 +1057,11 @@ if selected_record is not None:
                 time.monotonic() + float(live_refresh_seconds)
             )
 
-    ops_live_df = load_path(str(selected_record["path"])).reset_index(drop=True)
+    ops_live_df = load_path(str(selected_record["path"]))
+    if not isinstance(ops_live_df.index, pd.RangeIndex) or ops_live_df.index.start != 0:
+        ops_live_df = ops_live_df.reset_index(drop=True)
     ops_total_rows = len(ops_live_df)
+    ops_live_time_labels = measurement_time_labels(ops_live_df)
     ops_model_key = (
         f"{selected_record['path']}::{selected_record['modified_at']}::"
         f"{active_model.model_id}::{active_model.sha256}"
@@ -1021,7 +1069,13 @@ if selected_record is not None:
         else ""
     )
 
-    @st.fragment(run_every=float(live_refresh_seconds))
+    heartbeat_interval = (
+        float(live_refresh_seconds)
+        if st.session_state.get("ops_live_running", False)
+        else None
+    )
+
+    @st.fragment(run_every=heartbeat_interval)
     def run_global_live_heartbeat() -> None:
         cached_model = st.session_state.get("live_model_analysis")
         model_result = (
@@ -1046,11 +1100,13 @@ if selected_record is not None:
 
 with tab_live:
     st.markdown('<div class="section-label">실시간 배터리팩 운전 모니터링</div>', unsafe_allow_html=True)
-    if selected_record is None:
+    if not tab_live.open:
+        pass
+    elif selected_record is None:
         st.info("재생할 Train 또는 Test 파일을 선택하세요.")
     else:
         try:
-            live_df = load_path(str(selected_record["path"])).reset_index(drop=True)
+            live_df = ops_live_df
             live_signature = f"{selected_record['path']}::{selected_record['modified_at']}"
             if st.session_state.get("live_signature") != live_signature:
                 st.session_state["live_signature"] = live_signature
@@ -1109,9 +1165,11 @@ with tab_live:
                     begin_live_fault_run()
                 st.session_state["ops_live_running"] = True
                 st.session_state["ops_live_next_tick"] = time.monotonic() + float(live_refresh_seconds)
+                # Rebuild the global heartbeat once with run_every enabled.
+                st.rerun()
 
             live_model_result = None
-            live_time_labels = measurement_time_labels(live_df)
+            live_time_labels = ops_live_time_labels
             if active_model is not None:
                 model_live_key = f"{live_signature}::{active_model.model_id}::{active_model.sha256}"
                 cached_live_model = st.session_state.get("live_model_analysis")
@@ -1120,7 +1178,7 @@ with tab_live:
                         try:
                             cached_live_model = {
                                 "key": model_live_key,
-                                "result": score_dataframe(active_model, live_df, selected_record["file_name"]),
+                                "result": load_model_score(active_model, selected_record),
                             }
                             st.session_state["live_model_analysis"] = cached_live_model
                         except Exception as exc:
@@ -1356,13 +1414,15 @@ with tab_live:
 
 with tab_live_visual:
     st.markdown('<div class="section-label">실시간 배터리팩 센서 맵</div>', unsafe_allow_html=True)
-    if selected_record is None:
+    if not tab_live_visual.open:
+        pass
+    elif selected_record is None:
         st.info("실시간 검사에 사용할 Train 또는 Test 파일을 선택하세요.")
     elif active_model is None:
         st.warning("운영 승인된 배터리팩 LSTM 모델이 없습니다.")
     else:
         try:
-            schematic_df = load_path(str(selected_record["path"])).reset_index(drop=True)
+            schematic_df = ops_live_df
             schematic_signature = (
                 f"{selected_record['path']}::{selected_record['modified_at']}::"
                 f"{active_model.model_id}::{active_model.sha256}"
@@ -1376,7 +1436,7 @@ with tab_live_visual:
                 with st.spinner("배터리팩 LSTM 모델을 준비하고 있습니다."):
                     cached_schematic_model = {
                         "key": model_live_key,
-                        "result": score_dataframe(active_model, schematic_df, selected_record["file_name"]),
+                        "result": load_model_score(active_model, selected_record),
                     }
                     st.session_state["live_model_analysis"] = cached_schematic_model
             schematic_result = cached_schematic_model["result"]
@@ -1427,6 +1487,7 @@ with tab_live_visual:
                     begin_live_fault_run()
                 st.session_state["ops_live_running"] = True
                 st.session_state["ops_live_next_tick"] = time.monotonic() + float(live_refresh_seconds)
+                # Rebuild the global heartbeat once with run_every enabled.
                 st.rerun()
 
             schematic_run_every = (
@@ -1510,8 +1571,8 @@ with tab_data_status:
     dchg_count = int(catalog["mode"].eq("DCHG").sum()) if not catalog.empty else 0
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("저장된 데이터", f"{len(catalog):,}개", delta=f"읽기 가능 {readable_count:,}개")
-    c2.metric("충전 CHG", f"{chg_count:,}개")
-    c3.metric("방전 DCHG", f"{dchg_count:,}개")
+    c2.metric("충전", f"{chg_count:,}개")
+    c3.metric("방전", f"{dchg_count:,}개")
     c4.metric(
         "운영 모델",
         f"{len(operational_models):,}개",
@@ -1570,9 +1631,11 @@ with tab_data_status:
 
 with tab_daily:
     st.markdown('<div class="section-label">일별·파일 측정 로그</div>', unsafe_allow_html=True)
-    if selected_record is not None:
+    if not tab_daily.open:
+        pass
+    elif selected_record is not None:
         try:
-            log_df = load_path(str(selected_record["path"])).reset_index(drop=True)
+            log_df = ops_live_df
             daily_model_result = None
             if active_model is not None:
                 daily_signature = f"{selected_record['path']}::{selected_record['modified_at']}"
@@ -1581,7 +1644,7 @@ with tab_daily:
                 if not cached_daily_model or cached_daily_model.get("key") != daily_model_key:
                     cached_daily_model = {
                         "key": daily_model_key,
-                        "result": score_dataframe(active_model, log_df, selected_record["file_name"]),
+                        "result": load_model_score(active_model, selected_record),
                     }
                     st.session_state["live_model_analysis"] = cached_daily_model
                 daily_model_result = cached_daily_model["result"]
@@ -1925,11 +1988,20 @@ with tab_data_status:
                 default=[role for role in ["test", "external", "inbox"] if role in set(catalog["source_role"])],
             )
         with f2:
-            batch_modes = st.multiselect(
-                "운전 모드",
-                options=sorted(catalog["mode"].unique()),
-                default=[mode for mode in ["CHG", "DCHG"] if mode in set(catalog["mode"])],
+            mode_pairs = {
+                str(mode): display_mode(mode)
+                for mode in sorted(catalog["mode"].dropna().astype(str).unique())
+            }
+            batch_mode_labels = st.multiselect(
+                "충·방전",
+                options=list(mode_pairs.values()),
+                default=[
+                    label
+                    for code, label in mode_pairs.items()
+                    if code in {"CHG", "DCHG"}
+                ],
             )
+            batch_modes = [code for code, label in mode_pairs.items() if label in batch_mode_labels]
         with f3:
             batch_limit = st.number_input("최대 파일 수", min_value=1, max_value=500, value=int(settings["display"]["default_batch_limit"]), step=10)
 
@@ -2115,7 +2187,9 @@ with tab_fault:
     else:
         unresolved = fault_events["fault_type"].eq("유형 분석 대기")
         open_actions = ~fault_events["action_status"].eq("완료")
-        urgent = fault_events["severity"].isin(["높음", "긴급"])
+        fault_events["mode_display"] = fault_events["mode"].map(display_mode)
+        risk_levels = pd.to_numeric(fault_events["risk_level"], errors="coerce").fillna(0)
+        urgent = risk_levels.ge(2)
         fault_log_revision = int(st.session_state.get("fault_log_table_revision", 0))
         f1, f2, f3, f4 = st.columns(4)
         f1.metric("누적 불량", f"{len(fault_events):,}건")
@@ -2126,7 +2200,10 @@ with tab_fault:
         filter_col1, filter_col2, filter_col3 = st.columns(3)
         type_options = ["전체"] + sorted(fault_events["fault_type"].dropna().astype(str).unique().tolist())
         status_options = ["전체"] + sorted(fault_events["action_status"].dropna().astype(str).unique().tolist())
-        mode_options = ["전체"] + sorted(fault_events["mode"].dropna().astype(str).unique().tolist())
+        preferred_mode_order = ["충전", "방전", "충·방전", "미분류"]
+        available_modes = set(fault_events["mode_display"].dropna().astype(str))
+        mode_options = ["전체"] + [mode for mode in preferred_mode_order if mode in available_modes]
+        mode_options += sorted(available_modes - set(mode_options))
         with filter_col1:
             selected_fault_type = st.selectbox(
                 "불량 유형",
@@ -2141,7 +2218,7 @@ with tab_fault:
             )
         with filter_col3:
             selected_fault_mode = st.selectbox(
-                "운전 모드",
+                "충·방전",
                 mode_options,
                 key=f"fault_log_mode_filter_{fault_log_revision}",
             )
@@ -2152,7 +2229,7 @@ with tab_fault:
         if selected_action_status != "전체":
             filtered_faults = filtered_faults[filtered_faults["action_status"].eq(selected_action_status)]
         if selected_fault_mode != "전체":
-            filtered_faults = filtered_faults[filtered_faults["mode"].eq(selected_fault_mode)]
+            filtered_faults = filtered_faults[filtered_faults["mode_display"].eq(selected_fault_mode)]
         filtered_faults = filtered_faults.reset_index(drop=True)
 
         if filtered_faults.empty:
@@ -2161,10 +2238,11 @@ with tab_fault:
             fault_table = filtered_faults[
                 [
                     "detected_at",
-                    "mode",
+                    "mode_display",
                     "fault_type",
                     "fault_confidence",
-                    "severity",
+                    "risk_level",
+                    "rpn",
                     "suspect_sensors",
                     "recommended_action",
                     "action_status",
@@ -2176,13 +2254,18 @@ with tab_fault:
                 lambda value: f"{value:.1%}" if np.isfinite(value) else "-"
             )
             fault_table["suspect_sensors"] = fault_table["suspect_sensors"].replace("", "-")
+            fault_table["risk_level"] = fault_table["risk_level"].map(pfmea_risk_label)
+            fault_table["rpn"] = (
+                pd.to_numeric(fault_table["rpn"], errors="coerce").fillna(0).astype(int)
+            )
             fault_table = fault_table.rename(
                 columns={
                     "detected_at": "검출 시각",
-                    "mode": "모드",
+                    "mode_display": "충·방전",
                     "fault_type": "불량 유형",
                     "fault_confidence": "유형 신뢰도",
-                    "severity": "위험도",
+                    "risk_level": "위험도",
+                    "rpn": "RPN",
                     "suspect_sensors": "문제 센서",
                     "recommended_action": "권장 조치",
                     "action_status": "처리 상태",
@@ -2190,7 +2273,7 @@ with tab_fault:
                 }
             )
             fault_selection = st.dataframe(
-                fault_table,
+                pfmea_fault_table_styler(fault_table),
                 width="stretch",
                 hide_index=True,
                 height=330,
@@ -2263,10 +2346,16 @@ with tab_fault:
 
             confidence_value = pd.to_numeric(pd.Series([selected_fault["fault_confidence"]]), errors="coerce").iloc[0]
             confidence_text = f"{confidence_value:.1%}" if np.isfinite(confidence_value) else "-"
+            selected_risk_level = pd.to_numeric(
+                pd.Series([selected_fault["risk_level"]]), errors="coerce"
+            ).fillna(0).astype(int).iloc[0]
+            selected_rpn = pd.to_numeric(
+                pd.Series([selected_fault["rpn"]]), errors="coerce"
+            ).fillna(0).astype(int).iloc[0]
             d1, d2, d3, d4 = st.columns(4)
             d1.metric("불량 유형", str(selected_fault["fault_type"]))
             d2.metric("유형 신뢰도", confidence_text)
-            d3.metric("위험도", str(selected_fault["severity"]))
+            d3.metric("PFMEA 위험도", f"위험도 {selected_risk_level}", delta=f"RPN {selected_rpn}", delta_color="off")
             d4.metric("검출 시작 행", fmt_float(selected_fault["detected_row"], 0))
 
             evidence_col, probability_col = st.columns(2)
@@ -2369,6 +2458,7 @@ with tab_fault:
             with action_col:
                 st.warning(f"1차 조치: {selected_fault['recommended_action']}")
                 st.write(str(selected_fault["recommendation_reason"]))
+                st.caption(f"PFMEA 연계 유형: {selected_fault['pfmea_ng_codes']}")
             with disposition_col:
                 st.error(f"처분 기준: {selected_fault['disposition_guide']}")
                 st.caption("폐기 여부는 모델이 자동 확정하지 않으며 현장 재계측과 안전 담당자 승인 후 결정합니다.")
