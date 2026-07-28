@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import csv
 from dataclasses import dataclass
 from datetime import date, datetime
+import hashlib
+import io
 import json
 import logging
 import math
@@ -14,25 +17,15 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+import uuid
 
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 5.0
 MAX_RESPONSE_PREVIEW = 500
 HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-JSON_TEXT_FIELDS = {
-    "fault_probabilities",
-    "model_summary_json",
-    "model_details_json",
-    "source_columns_json",
-    "source_row_json",
-    "source_window_json",
-}
-RAW_FIELDS = {
-    "source_columns_json",
-    "source_row_json",
-    "source_window_json",
-}
+UPLOAD_FIELD_NAME = "fault_log_csv"
+UPLOAD_FILE_NAME = "model_fault_event_log.csv"
 
 
 @dataclass(frozen=True)
@@ -42,7 +35,7 @@ class N8nWebhookSettings:
     auth_header_name: str = "X-Battery-Token"
     auth_token: str = ""
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    send_raw_window: bool = False
+    send_raw_window: bool = True
 
 
 @dataclass(frozen=True)
@@ -122,7 +115,7 @@ def load_n8n_settings(
         ).strip(),
         auth_token=str(values.get("auth_token", "")).strip(),
         timeout_seconds=_as_timeout(values.get("timeout_seconds")),
-        send_raw_window=_as_bool(values.get("send_raw_window"), False),
+        send_raw_window=_as_bool(values.get("send_raw_window"), True),
     )
 
 
@@ -154,57 +147,130 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-def _decode_json_text_fields(event: dict[str, Any]) -> dict[str, Any]:
-    decoded = dict(event)
-    for field in JSON_TEXT_FIELDS:
-        value = decoded.get(field)
-        if not isinstance(value, str) or not value.strip():
-            continue
-        try:
-            decoded[field] = json.loads(value)
-        except json.JSONDecodeError:
-            pass
-    return decoded
-
-
-def build_n8n_payload(
-    record: Mapping[str, Any],
-    *,
-    send_raw_window: bool,
-    sent_at: str | None = None,
-) -> dict[str, Any]:
-    event = dict(record)
-    event.pop("source_path", None)
-    if not send_raw_window:
-        event = {
-            key: value
-            for key, value in event.items()
-            if key not in RAW_FIELDS and not key.startswith("raw__")
-        }
-    event = _decode_json_text_fields(event)
-    return {
-        "schema_version": "1.0",
-        "event_type": "battery_pack_fault",
-        "webhook_sent_at": sent_at or datetime.now().isoformat(timespec="seconds"),
-        **_json_safe(event),
-    }
-
-
 def _validate_settings(settings: N8nWebhookSettings) -> str:
     if not settings.webhook_url:
         return "n8n webhook_url is empty"
     parsed = urlparse(settings.webhook_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return "n8n webhook_url must be an absolute HTTP(S) URL"
-    if settings.auth_header_name and not HEADER_NAME_PATTERN.fullmatch(
-        settings.auth_header_name
-    ):
+    if not settings.auth_header_name:
+        return "n8n auth_header_name is empty"
+    if not HEADER_NAME_PATTERN.fullmatch(settings.auth_header_name):
         return "n8n auth_header_name is invalid"
+    if not settings.auth_token:
+        return "n8n auth_token is empty"
     return ""
 
 
-def send_fault_event_to_n8n(
-    record: Mapping[str, Any],
+def _csv_row_count(payload: bytes) -> int:
+    text = payload.decode("utf-8-sig", errors="replace")
+    rows = csv.reader(io.StringIO(text))
+    try:
+        next(rows)
+    except StopIteration:
+        return 0
+    return sum(1 for _ in rows)
+
+
+def build_fault_log_metadata(
+    csv_path: str | Path,
+    trigger_record: Mapping[str, Any],
+    *,
+    sent_at: str,
+    payload: bytes | None = None,
+) -> dict[str, Any]:
+    path = Path(csv_path)
+    csv_payload = payload if payload is not None else path.read_bytes()
+    return {
+        "schema_version": "2.0",
+        "event_type": "battery_pack_fault_log_snapshot",
+        "webhook_sent_at": sent_at,
+        "trigger_event_id": str(trigger_record.get("event_id", "")).strip(),
+        "trigger_source_file": str(trigger_record.get("source_file", "")).strip(),
+        "trigger_serial_number": str(
+            trigger_record.get("serial_number", "")
+        ).strip(),
+        "csv_filename": UPLOAD_FILE_NAME,
+        "csv_row_count": _csv_row_count(csv_payload),
+        "csv_size_bytes": len(csv_payload),
+        "csv_sha256": hashlib.sha256(csv_payload).hexdigest(),
+    }
+
+
+def _multipart_text_part(boundary: str, name: str, value: str) -> bytes:
+    return (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{name}"\r\n'
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "\r\n"
+        f"{value}\r\n"
+    ).encode("utf-8")
+
+
+def build_fault_log_multipart(
+    csv_path: str | Path,
+    trigger_record: Mapping[str, Any],
+    *,
+    sent_at: str,
+    boundary: str | None = None,
+) -> tuple[bytes, str, dict[str, Any]]:
+    path = Path(csv_path)
+    csv_payload = path.read_bytes()
+    resolved_boundary = boundary or f"BatteryPackDashboard{uuid.uuid4().hex}"
+    metadata = build_fault_log_metadata(
+        path,
+        trigger_record,
+        sent_at=sent_at,
+        payload=csv_payload,
+    )
+    metadata_json = json.dumps(
+        _json_safe(metadata),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+
+    body = bytearray()
+    body.extend(
+        _multipart_text_part(
+            resolved_boundary,
+            "metadata",
+            metadata_json,
+        )
+    )
+    body.extend(
+        _multipart_text_part(
+            resolved_boundary,
+            "event_id",
+            metadata["trigger_event_id"],
+        )
+    )
+    body.extend(
+        _multipart_text_part(
+            resolved_boundary,
+            "row_count",
+            str(metadata["csv_row_count"]),
+        )
+    )
+    body.extend(f"--{resolved_boundary}\r\n".encode("ascii"))
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="{UPLOAD_FIELD_NAME}"; '
+            f'filename="{UPLOAD_FILE_NAME}"\r\n'
+            "Content-Type: text/csv; charset=utf-8\r\n"
+            "\r\n"
+        ).encode("utf-8")
+    )
+    body.extend(csv_payload)
+    body.extend(b"\r\n")
+    body.extend(f"--{resolved_boundary}--\r\n".encode("ascii"))
+    content_type = f"multipart/form-data; boundary={resolved_boundary}"
+    return bytes(body), content_type, metadata
+
+
+def send_fault_log_csv_to_n8n(
+    csv_path: str | Path,
+    trigger_record: Mapping[str, Any],
     *,
     settings: N8nWebhookSettings | None = None,
 ) -> N8nDeliveryResult:
@@ -212,10 +278,10 @@ def send_fault_event_to_n8n(
     if not resolved.enabled:
         return N8nDeliveryResult(enabled=False, attempted=False, sent=False)
 
-    configuration_error = _validate_settings(resolved)
     delivered_at = datetime.now().isoformat(timespec="seconds")
+    configuration_error = _validate_settings(resolved)
     if configuration_error:
-        LOGGER.warning("n8n delivery skipped: %s", configuration_error)
+        LOGGER.warning("n8n CSV delivery skipped: %s", configuration_error)
         return N8nDeliveryResult(
             enabled=True,
             attempted=False,
@@ -224,25 +290,42 @@ def send_fault_event_to_n8n(
             delivered_at=delivered_at,
         )
 
-    payload = build_n8n_payload(
-        record,
-        send_raw_window=resolved.send_raw_window,
-        sent_at=delivered_at,
-    )
-    body = json.dumps(
-        payload,
-        ensure_ascii=False,
-        allow_nan=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    path = Path(csv_path)
+    if not path.is_file():
+        error = f"fault log CSV does not exist: {path}"
+        LOGGER.warning("n8n CSV delivery skipped: %s", error)
+        return N8nDeliveryResult(
+            enabled=True,
+            attempted=False,
+            sent=False,
+            error=error,
+            delivered_at=delivered_at,
+        )
+
+    try:
+        body, content_type, metadata = build_fault_log_multipart(
+            path,
+            trigger_record,
+            sent_at=delivered_at,
+        )
+    except (OSError, UnicodeError, csv.Error, ValueError) as exc:
+        LOGGER.warning("n8n CSV payload build failed: %s", exc)
+        return N8nDeliveryResult(
+            enabled=True,
+            attempted=False,
+            sent=False,
+            error=str(exc),
+            delivered_at=delivered_at,
+        )
+
     headers = {
         "Accept": "application/json",
-        "Content-Type": "application/json; charset=utf-8",
+        "Content-Type": content_type,
         "User-Agent": "Battery-Pack-Quality-Dashboard/1.0",
+        "X-Battery-Event-Id": metadata["trigger_event_id"],
+        "X-Battery-Log-SHA256": metadata["csv_sha256"],
+        resolved.auth_header_name: resolved.auth_token,
     }
-    if resolved.auth_header_name and resolved.auth_token:
-        headers[resolved.auth_header_name] = resolved.auth_token
-
     request = Request(
         resolved.webhook_url,
         data=body,
@@ -252,10 +335,13 @@ def send_fault_event_to_n8n(
     try:
         with urlopen(request, timeout=resolved.timeout_seconds) as response:
             status_code = int(response.getcode())
-            preview = response.read(MAX_RESPONSE_PREVIEW).decode("utf-8", errors="replace")
+            preview = response.read(MAX_RESPONSE_PREVIEW).decode(
+                "utf-8",
+                errors="replace",
+            )
         sent = 200 <= status_code < 300
         if not sent:
-            LOGGER.warning("n8n delivery returned HTTP %s", status_code)
+            LOGGER.warning("n8n CSV delivery returned HTTP %s", status_code)
         return N8nDeliveryResult(
             enabled=True,
             attempted=True,
@@ -267,7 +353,7 @@ def send_fault_event_to_n8n(
         )
     except HTTPError as exc:
         preview = exc.read(MAX_RESPONSE_PREVIEW).decode("utf-8", errors="replace")
-        LOGGER.warning("n8n delivery failed with HTTP %s", exc.code)
+        LOGGER.warning("n8n CSV delivery failed with HTTP %s", exc.code)
         return N8nDeliveryResult(
             enabled=True,
             attempted=True,
@@ -278,7 +364,7 @@ def send_fault_event_to_n8n(
             delivered_at=delivered_at,
         )
     except (URLError, TimeoutError, socket.timeout, OSError) as exc:
-        LOGGER.warning("n8n delivery failed: %s", exc)
+        LOGGER.warning("n8n CSV delivery failed: %s", exc)
         return N8nDeliveryResult(
             enabled=True,
             attempted=True,

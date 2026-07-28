@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 
 from .config import BATCH_DIR, FAULT_DIR, INBOX_DIR, REVIEW_DIR
-from .n8n_webhook import send_fault_event_to_n8n
+from .n8n_webhook import send_fault_log_csv_to_n8n
 
 
 def safe_file_name(name: str) -> str:
@@ -128,7 +128,7 @@ def upsert_fault_event(record: dict[str, Any]) -> Path:
     _atomic_write_csv(updated, path)
 
     if not duplicate_event:
-        delivery = send_fault_event_to_n8n(event)
+        delivery = send_fault_log_csv_to_n8n(path, event)
         if delivery.enabled:
             delivery_fields = {
                 "n8n_delivery_status": delivery.status,
