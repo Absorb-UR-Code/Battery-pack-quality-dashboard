@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from .config import BATCH_DIR, FAULT_DIR, INBOX_DIR, REVIEW_DIR
+from .n8n_webhook import send_fault_event_to_n8n
 
 
 def safe_file_name(name: str) -> str:
@@ -111,11 +112,38 @@ def upsert_fault_event(record: dict[str, Any]) -> Path:
     }
     existing = load_fault_event_log()
     event_id = str(event.get("event_id", "")).strip()
+    duplicate_event = False
     if event_id and not existing.empty and "event_id" in existing.columns:
-        existing = existing[existing["event_id"].astype(str).ne(event_id)]
+        event_mask = existing["event_id"].astype(str).eq(event_id)
+        duplicate_event = bool(event_mask.any())
+        if duplicate_event:
+            previous = existing.loc[event_mask].iloc[-1]
+            for column in existing.columns:
+                if column.startswith("n8n_") and column not in event:
+                    event[column] = previous.get(column, "")
+        existing = existing.loc[~event_mask].copy()
+
     updated = pd.concat([existing, pd.DataFrame([event])], ignore_index=True)
     path = fault_event_log_path()
     _atomic_write_csv(updated, path)
+
+    if not duplicate_event:
+        delivery = send_fault_event_to_n8n(event)
+        if delivery.enabled:
+            delivery_fields = {
+                "n8n_delivery_status": delivery.status,
+                "n8n_delivery_at": delivery.delivered_at,
+                "n8n_http_status": delivery.status_code,
+                "n8n_delivery_error": delivery.error,
+                "n8n_response_preview": delivery.response_preview,
+            }
+            event.update(delivery_fields)
+            updated = pd.concat(
+                [existing, pd.DataFrame([event])],
+                ignore_index=True,
+            )
+            _atomic_write_csv(updated, path)
+
     return path
 
 
