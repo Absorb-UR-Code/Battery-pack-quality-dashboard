@@ -293,6 +293,46 @@ def load_model_score(spec: ModelSpec, record: pd.Series) -> dict[str, object]:
     )
 
 
+def file_fault_occurrence_key(record: pd.Series, spec: ModelSpec) -> str:
+    return "::".join(
+        [
+            str(record["path"]),
+            str(record.get("modified_at", "")),
+            spec.model_id,
+            spec.sha256,
+        ]
+    )
+
+
+def persist_file_fault_event(
+    result: dict[str, object],
+    *,
+    record: pd.Series,
+    frame: pd.DataFrame,
+    spec: ModelSpec,
+) -> dict[str, object] | None:
+    detected_at = None
+    time_labels = measurement_time_labels(frame)
+    if not time_labels.empty:
+        last_time = str(time_labels.iloc[-1]).strip()
+        if last_time and last_time != "-":
+            detected_at = last_time
+
+    event = build_fault_event(
+        result,
+        source_file=str(record["file_name"]),
+        source_path=str(record["path"]),
+        source_frame=frame,
+        mode=str(record["mode"]),
+        detected_at=detected_at,
+        origin="파일 판정",
+        occurrence_key=file_fault_occurrence_key(record, spec),
+    )
+    if event:
+        upsert_fault_event(event)
+    return event
+
+
 def status_html(status: str, label: str | None = None) -> str:
     normalized = str(status).upper()
     css = "status-normal" if normalized in {"NORMAL", "PASS", "READY"} else "status-ng" if normalized in {"NG", "NG_REVIEW", "FAIL", "ERROR"} else "status-review" if normalized in {"REVIEW", "FAULT_SCENARIO"} else "status-info"
@@ -1649,6 +1689,12 @@ with tab_daily:
                     }
                     st.session_state["live_model_analysis"] = cached_daily_model
                 daily_model_result = cached_daily_model["result"]
+                persist_file_fault_event(
+                    daily_model_result,
+                    record=selected_record,
+                    frame=log_df,
+                    spec=active_model,
+                )
             daily_fault_domains = fault_domain_coverage(daily_model_result, len(log_df))
 
             _, _, log_timestamp = resolve_time_axis(log_df)
@@ -1840,16 +1886,12 @@ with tab_daily:
                     result["elapsed_ms"] = (time.perf_counter() - started) * 1000
                     result["analysis_key"] = analysis_key
                     st.session_state["active_analysis"] = result
-                    event = build_fault_event(
+                    event = persist_file_fault_event(
                         result,
-                        source_file=selected_record["file_name"],
-                        source_path=str(selected_record["path"]),
-                        source_frame=frame,
-                        mode=str(selected_record["mode"]),
-                        origin="파일 판정",
+                        record=selected_record,
+                        frame=frame,
+                        spec=active_model,
                     )
-                    if event:
-                        upsert_fault_event(event)
                 except Exception as exc:
                     st.session_state.pop("active_analysis", None)
                     st.error(f"판정 실패: {type(exc).__name__}: {exc}")

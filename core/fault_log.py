@@ -602,9 +602,17 @@ def build_fault_event(
     model_id = str(summary.get("model_id", ""))
     model_name = str(summary.get("model_name", ""))
     model_version = str(summary.get("model_version", ""))
-    event_id_parts = [origin, source_file, model_id, model_version, detected_row or 0, detected]
     if occurrence_key:
-        event_id_parts.append(occurrence_key)
+        event_id_parts = [
+            origin,
+            source_file,
+            model_id,
+            model_version,
+            detected_row or 0,
+            occurrence_key,
+        ]
+    else:
+        event_id_parts = [origin, source_file, model_id, model_version, detected_row or 0, detected]
     event_id = _event_id(*event_id_parts)
     event_mode = str(summary.get("mode", mode)).upper()
     try:

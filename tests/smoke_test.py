@@ -175,6 +175,25 @@ def main() -> None:
     )
     assert repeated_fault_event is not None
     assert repeated_fault_event["event_id"] != fault_event["event_id"]
+    stable_fault_event_1 = build_fault_event(
+        synthetic_result,
+        source_file="Test09_NG_dchg.csv",
+        detected_row=120,
+        detected_at="2021-11-02 08:42:43",
+        origin="file-analysis",
+        occurrence_key="same-file-revision",
+    )
+    stable_fault_event_2 = build_fault_event(
+        synthetic_result,
+        source_file="Test09_NG_dchg.csv",
+        detected_row=120,
+        detected_at="2026-07-28 16:30:00",
+        origin="file-analysis",
+        occurrence_key="same-file-revision",
+    )
+    assert stable_fault_event_1 is not None
+    assert stable_fault_event_2 is not None
+    assert stable_fault_event_1["event_id"] == stable_fault_event_2["event_id"]
     batch_events = batch_fault_events(
         pd.DataFrame([{**synthetic_result["summary"], **fault_metadata, "file_name": "Test09_NG_dchg.csv"}]),
         batch_id="smoke-batch",
