@@ -24,6 +24,7 @@ from core.fault_log import (
     extract_fault_metadata,
     parse_probabilities,
     recommendation_for,
+    representative_fault_events,
 )
 from core.kpi_workspace_component import _COMPONENT_DIR
 from core.model_registry import discover_models
@@ -194,6 +195,51 @@ def main() -> None:
     assert stable_fault_event_1 is not None
     assert stable_fault_event_2 is not None
     assert stable_fault_event_1["event_id"] == stable_fault_event_2["event_id"]
+    representative_events = representative_fault_events(
+        pd.DataFrame(
+            [
+                {
+                    "event_id": "candidate-a",
+                    "source_file": "Test09_NG_dchg.csv",
+                    "model_id": "candidate-model",
+                    "fault_type": "고저항 불량",
+                    "fault_confidence": 0.99,
+                    "detected_at": "2026-07-28 15:00:00",
+                },
+                {
+                    "event_id": "production-low",
+                    "source_file": "Test09_NG_dchg.csv",
+                    "model_id": "production-model",
+                    "fault_type": "온도 센서 불량",
+                    "fault_confidence": 0.72,
+                    "detected_at": "2026-07-28 15:10:00",
+                },
+                {
+                    "event_id": "production-high",
+                    "source_file": "Test09_NG_dchg.csv",
+                    "model_id": "production-model",
+                    "fault_type": "온도 센서 불량",
+                    "fault_confidence": 0.92,
+                    "detected_at": "2026-07-28 15:20:00",
+                },
+                {
+                    "event_id": "production-other-file",
+                    "source_file": "Test08_NG_chg.csv",
+                    "model_id": "production-model",
+                    "fault_type": "온도 센서 불량",
+                    "fault_confidence": 0.88,
+                    "detected_at": "2026-07-28 15:30:00",
+                },
+            ]
+        ),
+        model_id="production-model",
+    )
+    assert len(representative_events) == 2
+    ng9_representative = representative_events[
+        representative_events["source_file"].eq("Test09_NG_dchg.csv")
+    ].iloc[0]
+    assert ng9_representative["event_id"] == "production-high"
+    assert abs(float(ng9_representative["fault_confidence"]) - 0.92) < 1e-12
     batch_events = batch_fault_events(
         pd.DataFrame([{**synthetic_result["summary"], **fault_metadata, "file_name": "Test09_NG_dchg.csv"}]),
         batch_id="smoke-batch",

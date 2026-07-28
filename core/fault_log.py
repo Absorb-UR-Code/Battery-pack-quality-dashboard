@@ -807,3 +807,54 @@ def load_fault_events(current_batch: pd.DataFrame | None = None) -> pd.DataFrame
         .sort_values("detected_at", ascending=False)
         .reset_index(drop=True)
     )
+
+
+def representative_fault_events(
+    events: pd.DataFrame,
+    *,
+    model_id: str | None = None,
+) -> pd.DataFrame:
+    if events.empty:
+        return events.copy()
+
+    view = events.copy()
+    if model_id:
+        if "model_id" not in view.columns:
+            return view.iloc[0:0].copy()
+        view = view[view["model_id"].astype(str).eq(str(model_id))].copy()
+    if view.empty:
+        return view
+
+    if "source_file" in view.columns:
+        source_key = view["source_file"].fillna("").astype(str).str.strip()
+    else:
+        source_key = pd.Series("", index=view.index, dtype="object")
+    if "source_path" in view.columns:
+        source_path = view["source_path"].fillna("").astype(str).str.strip()
+        source_key = source_key.where(source_key.ne(""), source_path)
+    if "event_id" in view.columns:
+        fallback = view["event_id"].fillna("").astype(str)
+    else:
+        fallback = view.index.astype(str)
+
+    view["_representative_key"] = source_key.where(source_key.ne(""), fallback)
+    if "fault_confidence" in view.columns:
+        confidence = pd.to_numeric(view["fault_confidence"], errors="coerce")
+    else:
+        confidence = pd.Series(np.nan, index=view.index, dtype=float)
+    view["_fault_confidence_sort"] = confidence.fillna(float("-inf"))
+    if "detected_at" not in view.columns:
+        view["detected_at"] = ""
+
+    view = (
+        view.sort_values(
+            ["_representative_key", "_fault_confidence_sort", "detected_at"],
+            ascending=[True, False, False],
+            kind="stable",
+        )
+        .drop_duplicates("_representative_key", keep="first")
+        .sort_values("detected_at", ascending=False, kind="stable")
+        .drop(columns=["_representative_key", "_fault_confidence_sort"])
+        .reset_index(drop=True)
+    )
+    return view

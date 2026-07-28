@@ -117,11 +117,7 @@ def upsert_fault_event(record: dict[str, Any]) -> Path:
         event_mask = existing["event_id"].astype(str).eq(event_id)
         duplicate_event = bool(event_mask.any())
         if duplicate_event:
-            previous = existing.loc[event_mask].iloc[-1]
-            for column in existing.columns:
-                if column.startswith("n8n_") and column not in event:
-                    event[column] = previous.get(column, "")
-        existing = existing.loc[~event_mask].copy()
+            return fault_event_log_path()
 
     updated = pd.concat([existing, pd.DataFrame([event])], ignore_index=True)
     path = fault_event_log_path()

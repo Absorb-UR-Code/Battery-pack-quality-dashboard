@@ -186,6 +186,11 @@ class N8nWebhookTests(unittest.TestCase):
                 patch.object(storage, "FAULT_DIR", Path(temp_dir)),
                 patch.object(
                     storage,
+                    "_atomic_write_csv",
+                    wraps=storage._atomic_write_csv,
+                ) as writer,
+                patch.object(
+                    storage,
                     "send_fault_source_csv_to_n8n",
                     side_effect=capture_snapshot,
                 ) as sender,
@@ -224,6 +229,7 @@ class N8nWebhookTests(unittest.TestCase):
         )
         self.assertEqual(len(saved), 2)
         self.assertEqual(set(saved["n8n_delivery_status"]), {"SENT"})
+        self.assertEqual(writer.call_count, 4)
 
     def test_delivery_failure_does_not_prevent_csv_storage(self) -> None:
         delivery = N8nDeliveryResult(

@@ -37,6 +37,7 @@ from core.fault_log import (
     extract_fault_metadata,
     load_fault_events,
     parse_probabilities,
+    representative_fault_events,
 )
 from core.kpi_workspace_component import render_kpi_workspace
 from core.model_registry import ModelSpec, discover_models, model_inventory, score_dataframe
@@ -311,6 +312,11 @@ def persist_file_fault_event(
     frame: pd.DataFrame,
     spec: ModelSpec,
 ) -> dict[str, object] | None:
+    occurrence_key = file_fault_occurrence_key(record, spec)
+    processed_keys = st.session_state.setdefault("processed_file_fault_occurrences", set())
+    if occurrence_key in processed_keys:
+        return None
+
     detected_at = None
     time_labels = measurement_time_labels(frame)
     if not time_labels.empty:
@@ -326,10 +332,11 @@ def persist_file_fault_event(
         mode=str(record["mode"]),
         detected_at=detected_at,
         origin="파일 판정",
-        occurrence_key=file_fault_occurrence_key(record, spec),
+        occurrence_key=occurrence_key,
     )
     if event:
         upsert_fault_event(event)
+    processed_keys.add(occurrence_key)
     return event
 
 
@@ -2219,7 +2226,12 @@ with tab_fault:
     if deleted_fault_message:
         st.success(deleted_fault_message)
     current_batch = st.session_state.get("batch_result")
-    fault_events = load_fault_events(current_batch if isinstance(current_batch, pd.DataFrame) else None)
+    fault_events = representative_fault_events(
+        load_fault_events(current_batch if isinstance(current_batch, pd.DataFrame) else None),
+        model_id=active_model.model_id if active_model is not None else None,
+    )
+    if active_model is not None:
+        st.caption(f"{active_model.name} 기준 · 동일 CSV는 유형 신뢰도가 가장 높은 대표 판정 1건만 표시합니다.")
 
     if fault_events.empty:
         st.info("운영 모델에서 불량으로 판정된 로그가 없습니다.")
