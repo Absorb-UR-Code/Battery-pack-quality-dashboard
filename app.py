@@ -14,6 +14,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from core import storage as storage_api
 from core.config import APP_ROOT, MODEL_DIR, load_settings, save_settings
 from core.data_catalog import (
     audit_data_quality,
@@ -44,7 +45,6 @@ from core.fault_log import (
 from core.kpi_workspace_component import render_kpi_workspace
 from core.model_registry import ModelSpec, discover_models, model_inventory, score_dataframe
 from core.storage import (
-    apply_human_review_to_fault_events,
     append_fault_action,
     append_review,
     dataframe_csv_bytes,
@@ -2357,7 +2357,7 @@ with tab_review:
                             "notes": notes,
                         }
                     )
-                    sync_result = apply_human_review_to_fault_events(
+                    sync_result = storage_api.apply_human_review_to_fault_events(
                         str(selected_review_serial),
                         human_label,
                         reviewer=reviewer.strip(),
