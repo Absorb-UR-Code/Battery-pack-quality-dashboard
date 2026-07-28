@@ -24,8 +24,7 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 5.0
 MAX_RESPONSE_PREVIEW = 500
 HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-UPLOAD_FIELD_NAME = "fault_log_csv"
-UPLOAD_FILE_NAME = "model_fault_event_log.csv"
+UPLOAD_FIELD_NAME = "fault_source_csv"
 
 
 @dataclass(frozen=True)
@@ -172,7 +171,7 @@ def _csv_row_count(payload: bytes) -> int:
     return sum(1 for _ in rows)
 
 
-def build_fault_log_metadata(
+def build_fault_source_metadata(
     csv_path: str | Path,
     trigger_record: Mapping[str, Any],
     *,
@@ -183,14 +182,14 @@ def build_fault_log_metadata(
     csv_payload = payload if payload is not None else path.read_bytes()
     return {
         "schema_version": "2.0",
-        "event_type": "battery_pack_fault_log_snapshot",
+        "event_type": "battery_pack_fault_source_csv",
         "webhook_sent_at": sent_at,
         "trigger_event_id": str(trigger_record.get("event_id", "")).strip(),
         "trigger_source_file": str(trigger_record.get("source_file", "")).strip(),
         "trigger_serial_number": str(
             trigger_record.get("serial_number", "")
         ).strip(),
-        "csv_filename": UPLOAD_FILE_NAME,
+        "csv_filename": path.name,
         "csv_row_count": _csv_row_count(csv_payload),
         "csv_size_bytes": len(csv_payload),
         "csv_sha256": hashlib.sha256(csv_payload).hexdigest(),
@@ -207,7 +206,7 @@ def _multipart_text_part(boundary: str, name: str, value: str) -> bytes:
     ).encode("utf-8")
 
 
-def build_fault_log_multipart(
+def build_fault_source_multipart(
     csv_path: str | Path,
     trigger_record: Mapping[str, Any],
     *,
@@ -217,7 +216,7 @@ def build_fault_log_multipart(
     path = Path(csv_path)
     csv_payload = path.read_bytes()
     resolved_boundary = boundary or f"BatteryPackDashboard{uuid.uuid4().hex}"
-    metadata = build_fault_log_metadata(
+    metadata = build_fault_source_metadata(
         path,
         trigger_record,
         sent_at=sent_at,
@@ -256,7 +255,7 @@ def build_fault_log_multipart(
     body.extend(
         (
             f'Content-Disposition: form-data; name="{UPLOAD_FIELD_NAME}"; '
-            f'filename="{UPLOAD_FILE_NAME}"\r\n'
+            f'filename="{path.name}"\r\n'
             "Content-Type: text/csv; charset=utf-8\r\n"
             "\r\n"
         ).encode("utf-8")
@@ -268,7 +267,7 @@ def build_fault_log_multipart(
     return bytes(body), content_type, metadata
 
 
-def send_fault_log_csv_to_n8n(
+def send_fault_source_csv_to_n8n(
     csv_path: str | Path,
     trigger_record: Mapping[str, Any],
     *,
@@ -281,7 +280,7 @@ def send_fault_log_csv_to_n8n(
     delivered_at = datetime.now().isoformat(timespec="seconds")
     configuration_error = _validate_settings(resolved)
     if configuration_error:
-        LOGGER.warning("n8n CSV delivery skipped: %s", configuration_error)
+        LOGGER.warning("n8n fault source CSV delivery skipped: %s", configuration_error)
         return N8nDeliveryResult(
             enabled=True,
             attempted=False,
@@ -292,8 +291,8 @@ def send_fault_log_csv_to_n8n(
 
     path = Path(csv_path)
     if not path.is_file():
-        error = f"fault log CSV does not exist: {path}"
-        LOGGER.warning("n8n CSV delivery skipped: %s", error)
+        error = f"fault source CSV does not exist: {path}"
+        LOGGER.warning("n8n fault source CSV delivery skipped: %s", error)
         return N8nDeliveryResult(
             enabled=True,
             attempted=False,
@@ -303,13 +302,13 @@ def send_fault_log_csv_to_n8n(
         )
 
     try:
-        body, content_type, metadata = build_fault_log_multipart(
+        body, content_type, metadata = build_fault_source_multipart(
             path,
             trigger_record,
             sent_at=delivered_at,
         )
     except (OSError, UnicodeError, csv.Error, ValueError) as exc:
-        LOGGER.warning("n8n CSV payload build failed: %s", exc)
+        LOGGER.warning("n8n fault source CSV payload build failed: %s", exc)
         return N8nDeliveryResult(
             enabled=True,
             attempted=False,
@@ -341,7 +340,7 @@ def send_fault_log_csv_to_n8n(
             )
         sent = 200 <= status_code < 300
         if not sent:
-            LOGGER.warning("n8n CSV delivery returned HTTP %s", status_code)
+            LOGGER.warning("n8n fault source CSV delivery returned HTTP %s", status_code)
         return N8nDeliveryResult(
             enabled=True,
             attempted=True,
@@ -353,7 +352,7 @@ def send_fault_log_csv_to_n8n(
         )
     except HTTPError as exc:
         preview = exc.read(MAX_RESPONSE_PREVIEW).decode("utf-8", errors="replace")
-        LOGGER.warning("n8n CSV delivery failed with HTTP %s", exc.code)
+        LOGGER.warning("n8n fault source CSV delivery failed with HTTP %s", exc.code)
         return N8nDeliveryResult(
             enabled=True,
             attempted=True,
@@ -364,7 +363,7 @@ def send_fault_log_csv_to_n8n(
             delivered_at=delivered_at,
         )
     except (URLError, TimeoutError, socket.timeout, OSError) as exc:
-        LOGGER.warning("n8n CSV delivery failed: %s", exc)
+        LOGGER.warning("n8n fault source CSV delivery failed: %s", exc)
         return N8nDeliveryResult(
             enabled=True,
             attempted=True,
