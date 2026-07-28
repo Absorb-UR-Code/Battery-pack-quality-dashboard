@@ -97,7 +97,7 @@ class StoredRecordDeletionTests(unittest.TestCase):
         self.assertEqual(events_after_latest.loc[0, "final_action"], "재실험")
         self.assertEqual(events_after_latest.loc[0, "assignee"], "담당자 A")
         self.assertEqual(first_result["deleted"], 1)
-        self.assertEqual(events_after_all.loc[0, "action_status"], "신규")
+        self.assertEqual(events_after_all.loc[0, "action_status"], "현장 검토 중")
         self.assertEqual(events_after_all.loc[0, "final_action"], "미결정")
         self.assertTrue(
             pd.isna(events_after_all.loc[0, "assignee"])

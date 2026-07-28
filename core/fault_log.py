@@ -26,6 +26,7 @@ FAULT_EVENT_COLUMNS = [
     "origin",
     "source_file",
     "source_path",
+    "serial_number",
     "mode",
     "mode_display",
     "model_id",
@@ -252,7 +253,7 @@ def _is_missing(value: Any) -> bool:
         return True
     if isinstance(value, float) and np.isnan(value):
         return True
-    return str(value).strip().lower() in {"", "nan", "none", "null"}
+    return str(value).strip().lower() in {"", "nan", "none", "null", "<na>"}
 
 
 def _json_safe_scalar(value: Any) -> Any:
@@ -302,6 +303,67 @@ def _percent_text(value: Any) -> str:
     except (TypeError, ValueError):
         return ""
     return f"{numeric:.1%}" if np.isfinite(numeric) else ""
+
+
+def _normalize_serial_number(value: Any, fallback: str = "") -> str:
+    if _is_missing(value):
+        return fallback
+    text = str(value).strip()
+    try:
+        number = float(text)
+        if np.isfinite(number) and number.is_integer():
+            return str(int(number))
+    except (TypeError, ValueError):
+        pass
+    return text
+
+
+def _event_serial_number(
+    summary: dict[str, Any],
+    snapshot: dict[str, Any],
+    source_file: str,
+) -> str:
+    for key in ("serial_number", "SerialNumber", "Serial_Number", "serial"):
+        serial = _normalize_serial_number(summary.get(key))
+        if serial:
+            return serial
+    for key in (
+        "raw__SerialNumber",
+        "raw__Serial_Number",
+        "raw__serial_number",
+        "raw__serial",
+    ):
+        serial = _normalize_serial_number(snapshot.get(key))
+        if serial:
+            return serial
+    return _normalize_serial_number(Path(source_file).stem, "-")
+
+
+def _loaded_event_serial_number(row: pd.Series) -> str:
+    for key in (
+        "serial_number",
+        "raw__SerialNumber",
+        "raw__Serial_Number",
+        "raw__serial_number",
+        "raw__serial",
+    ):
+        serial = _normalize_serial_number(row.get(key))
+        if serial:
+            return serial
+
+    source_row_json = row.get("source_row_json")
+    if isinstance(source_row_json, str) and source_row_json.strip():
+        try:
+            source_row = json.loads(source_row_json)
+        except (json.JSONDecodeError, TypeError):
+            source_row = {}
+        if isinstance(source_row, dict):
+            for key in ("SerialNumber", "Serial_Number", "serial_number", "serial"):
+                serial = _normalize_serial_number(source_row.get(key))
+                if serial:
+                    return serial
+
+    return _normalize_serial_number(Path(str(row.get("source_file", ""))).stem, "-")
 
 
 def _infer_detected_row(result: dict[str, Any]) -> int | None:
@@ -650,6 +712,7 @@ def build_fault_event(
         "origin": origin,
         "source_file": source_file,
         "source_path": source_path,
+        "serial_number": _event_serial_number(summary, snapshot, source_file),
         "mode": event_mode,
         "mode_display": display_mode(event_mode),
         "model_id": model_id,
@@ -665,7 +728,7 @@ def build_fault_event(
         "score_p95": summary.get("score_p95", np.nan),
         "score_max": summary.get("score_max", np.nan),
         "max_consecutive_rows": summary.get("max_consecutive_rows", np.nan),
-        "action_status": "신규",
+        "action_status": "현장 검토 중",
         "final_action": "미결정",
         "assignee": "",
         "action_notes": "",
@@ -816,13 +879,16 @@ def load_fault_events(current_batch: pd.DataFrame | None = None) -> pd.DataFrame
     )
     events["fault_confidence_percent"] = events["fault_confidence"].map(_percent_text)
     events["fire_rate_percent"] = events["fire_rate"].map(_percent_text)
+    events["serial_number"] = events.apply(_loaded_event_serial_number, axis=1)
     events = events.drop_duplicates(subset=["event_id"], keep="last")
     deleted_event_ids = load_deleted_fault_event_ids()
     if deleted_event_ids:
         events = events[~events["event_id"].astype(str).isin(deleted_event_ids)].copy()
 
     actions = load_fault_actions()
+    action_event_ids: set[str] = set()
     if not actions.empty and "event_id" in actions.columns:
+        action_event_ids = set(actions["event_id"].fillna("").astype(str))
         latest = actions.sort_values("updated_at").drop_duplicates("event_id", keep="last")
         action_columns = [
             "event_id",
@@ -841,7 +907,7 @@ def load_fault_events(current_batch: pd.DataFrame | None = None) -> pd.DataFrame
         ).merge(latest, on="event_id", how="left")
 
     for column, default in {
-        "action_status": "신규",
+        "action_status": "현장 검토 중",
         "final_action": "미결정",
         "assignee": "",
         "action_notes": "",
@@ -850,6 +916,9 @@ def load_fault_events(current_batch: pd.DataFrame | None = None) -> pd.DataFrame
         if column not in events.columns:
             events[column] = default
         events[column] = events[column].fillna(default)
+    no_action_mask = ~events["event_id"].fillna("").astype(str).isin(action_event_ids)
+    legacy_new_mask = events["action_status"].fillna("").astype(str).eq("신규")
+    events.loc[no_action_mask & legacy_new_mask, "action_status"] = "현장 검토 중"
     ordered_columns = [column for column in FAULT_EVENT_COLUMNS if column in events.columns]
     extra_columns = [column for column in events.columns if column not in ordered_columns]
     return (

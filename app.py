@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import time
+from typing import Iterable
 import zipfile
 
 import numpy as np
@@ -43,6 +44,7 @@ from core.fault_log import (
 from core.kpi_workspace_component import render_kpi_workspace
 from core.model_registry import ModelSpec, discover_models, model_inventory, score_dataframe
 from core.storage import (
+    apply_human_review_to_fault_events,
     append_fault_action,
     append_review,
     dataframe_csv_bytes,
@@ -387,6 +389,22 @@ def serial_number_labels(frame: pd.DataFrame, source_file: str = "") -> pd.Serie
     return frame[serial_col].map(normalize)
 
 
+def sorted_serial_numbers(values: Iterable[object]) -> list[str]:
+    normalized = {
+        str(value).strip()
+        for value in values
+        if str(value).strip() and str(value).strip().casefold() not in {"nan", "none", "<na>"}
+    }
+
+    def serial_key(value: str) -> tuple[int, float | str]:
+        try:
+            return 0, float(value)
+        except (TypeError, ValueError):
+            return 1, value.casefold()
+
+    return sorted(normalized, key=serial_key)
+
+
 def battery_pack_schematic_html(
     *,
     position: int,
@@ -634,7 +652,7 @@ def measurement_kpi_log(
         return pd.DataFrame(
             columns=[
                 "측정 시각",
-                "시리얼 넘버",
+                "Serial Num",
                 "셀 전압 평균 (V)",
                 "셀 전압 편차 (V)",
                 "온도 평균 (°C)",
@@ -652,7 +670,7 @@ def measurement_kpi_log(
     return pd.DataFrame(
         {
             "측정 시각": measurement_time_labels(frame).iloc[positions].to_numpy(),
-            "시리얼 넘버": serial_number_labels(frame, source_file).iloc[positions].to_numpy(),
+            "Serial Num": serial_number_labels(frame, source_file).iloc[positions].to_numpy(),
             "셀 전압 평균 (V)": kpis["cv_mean"].round(4).to_numpy(),
             "셀 전압 편차 (V)": kpis["cv_std"].round(5).to_numpy(),
             "온도 평균 (°C)": kpis["temp_mean"].round(2).to_numpy(),
@@ -812,17 +830,27 @@ def pfmea_fault_table_styler(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
 
 def translated_reviews(frame: pd.DataFrame) -> pd.DataFrame:
     """Return the seven operator-facing review fields in a fixed Korean layout."""
+    working = frame.copy()
+    if "serial_number" not in working.columns:
+        working["serial_number"] = working.get("lot_id", "")
+    elif "lot_id" in working.columns:
+        working["serial_number"] = working["serial_number"].astype("string").fillna("")
+        serial_text = working["serial_number"].str.strip()
+        working.loc[serial_text.eq(""), "serial_number"] = working.loc[
+            serial_text.eq(""),
+            "lot_id",
+        ]
     columns = {
         "reviewed_at": "검토 시간",
         "reviewer": "작업자",
-        "lot_id": "LOT",
+        "serial_number": "Serial Num",
         "human_label": "현장 판정",
         "fault_type": "불량 유형",
         "notes": "검토 메모",
         "severity": "조치 우선순위",
     }
-    shown = [column for column in columns if column in frame.columns]
-    translated = frame[shown].copy()
+    shown = [column for column in columns if column in working.columns]
+    translated = working[shown].copy()
     if "reviewed_at" in translated.columns:
         original = translated["reviewed_at"].astype("string")
         parsed = pd.to_datetime(translated["reviewed_at"], errors="coerce")
@@ -1761,28 +1789,73 @@ with tab_daily:
             else:
                 available_dates = []
 
+            daily_date_col, daily_serial_col = st.columns(2)
             if available_dates:
-                selected_date = st.selectbox(
-                    "조회 날짜",
-                    options=available_dates,
-                    index=len(available_dates) - 1,
-                    key=f"daily_date_{selected_record['file_name']}",
-                )
+                with daily_date_col:
+                    selected_date = st.selectbox(
+                        "조회 날짜",
+                        options=available_dates,
+                        index=len(available_dates) - 1,
+                        key=f"daily_date_{selected_record['file_name']}",
+                    )
                 date_matches = log_timestamp.iloc[evaluated_positions].dt.date.eq(selected_date)
-                day_source_positions = evaluated_positions[date_matches.to_numpy()]
-                day_df = log_df.iloc[day_source_positions].copy()
+                date_source_positions = evaluated_positions[date_matches.to_numpy()]
+                date_text = str(selected_date)
+            else:
+                date_source_positions = evaluated_positions
+                date_text = "판정 행 없음" if not len(date_source_positions) else "시간 정보 없음"
+                with daily_date_col:
+                    st.selectbox(
+                        "조회 날짜",
+                        options=[date_text],
+                        disabled=True,
+                        key=f"daily_date_unavailable_{selected_record['file_name']}",
+                    )
+
+            daily_serial_series = serial_number_labels(log_df, selected_record["file_name"])
+            serial_options = sorted_serial_numbers(
+                daily_serial_series.iloc[date_source_positions].tolist()
+                if len(date_source_positions)
+                else []
+            )
+            with daily_serial_col:
+                if serial_options:
+                    selected_daily_serial = st.selectbox(
+                        "Serial Num",
+                        options=serial_options,
+                        key=f"daily_serial_{selected_record['file_name']}_{date_text}",
+                    )
+                else:
+                    st.selectbox(
+                        "Serial Num",
+                        options=["판정 행 없음"],
+                        disabled=True,
+                        key=f"daily_serial_unavailable_{selected_record['file_name']}_{date_text}",
+                    )
+                    selected_daily_serial = None
+
+            if selected_daily_serial is None:
+                day_source_positions = np.asarray([], dtype=int)
+            else:
+                serial_matches = daily_serial_series.iloc[date_source_positions].eq(
+                    selected_daily_serial
+                )
+                day_source_positions = date_source_positions[serial_matches.to_numpy()]
+
+            day_df = log_df.iloc[day_source_positions].copy()
+            if (
+                log_timestamp is not None
+                and log_timestamp.notna().any()
+                and len(day_source_positions)
+            ):
                 day_times = log_timestamp.iloc[day_source_positions].dropna()
                 duration_seconds = (
                     (day_times.max() - day_times.min()).total_seconds()
                     if len(day_times) >= 2
                     else 0.0
                 )
-                date_text = str(selected_date)
             else:
-                day_source_positions = evaluated_positions
-                day_df = log_df.iloc[day_source_positions].copy()
                 duration_seconds = np.nan
-                date_text = "판정 행 없음" if not len(day_source_positions) else "시간 정보 없음"
 
             d1, d2, d3 = st.columns(3)
             d1.metric("조회 기준", date_text)
@@ -1817,12 +1890,18 @@ with tab_daily:
                 height=360,
                 on_select="rerun",
                 selection_mode="single-row",
-                key=f"daily_log_table_{Path(selected_record['file_name']).stem}_{date_text}",
+                key=(
+                    f"daily_log_table_{Path(selected_record['file_name']).stem}_"
+                    f"{date_text}_{selected_daily_serial or 'none'}"
+                ),
             )
             st.download_button(
                 "조회 로그 CSV",
                 data=dataframe_csv_bytes(daily_export),
-                file_name=f"{Path(selected_record['file_name']).stem}_{date_text}_log.csv",
+                file_name=(
+                    f"{Path(selected_record['file_name']).stem}_{date_text}_"
+                    f"{selected_daily_serial or 'none'}_log.csv"
+                ),
                 mime="text/csv",
                 key="daily_log_download",
             )
@@ -1845,7 +1924,7 @@ with tab_daily:
                 temperature_matrix = sensor_snapshot_matrix(selected_row, temp_cols, "temperature")
 
                 st.markdown("#### 선택 행 센서 상세")
-                st.caption(f"측정 시각 {selected_time} · 시리얼 넘버 {selected_serial}")
+                st.caption(f"측정 시각 {selected_time} · Serial Num {selected_serial}")
                 voltage_detail_col, temp_detail_col = st.columns([2.2, 1.4])
                 with voltage_detail_col:
                     st.markdown(f"##### 셀 전압 센서 {len(cv_cols):,}개")
@@ -2204,23 +2283,24 @@ with tab_review:
     deleted_review_message = st.session_state.pop("deleted_review_message", "")
     if deleted_review_message:
         st.success(deleted_review_message)
-    active_result = st.session_state.get("active_analysis")
-    if selected_record is None:
-        st.info("검토할 파일을 먼저 선택하세요.")
+    saved_review_message = st.session_state.pop("saved_review_message", "")
+    if saved_review_message:
+        st.success(saved_review_message)
+
+    review_fault_events = representative_fault_events(
+        load_fault_events(),
+        model_id=active_model.model_id if active_model is not None else None,
+    )
+    if "serial_number" in review_fault_events.columns:
+        review_serial_options = sorted_serial_numbers(
+            review_fault_events["serial_number"].tolist()
+        )
     else:
-        if active_result:
-            summary = active_result["summary"]
-        else:
-            summary = {
-                "source_file": selected_record["file_name"],
-                "model_id": "NOT_RUN",
-                "model_version": "",
-                "status": "NOT_RUN",
-                "fire_rate": np.nan,
-                "score_p95": np.nan,
-                "max_consecutive_rows": np.nan,
-            }
-            st.info("운영 모델 판정 없이 작업자의 육안 검토와 재라벨링만 기록합니다.")
+        review_serial_options = []
+
+    if not review_serial_options:
+        st.info("현장 검토를 기록할 불량 로그의 Serial Num이 없습니다.")
+    else:
         with st.form("operator_review_form", clear_on_submit=True):
             r1, r2, r3 = st.columns(3)
             with r1:
@@ -2231,7 +2311,12 @@ with tab_review:
                     "불량 유형",
                     ["해당 없음", "저용량 불량", "고저항 불량", "용량 불량", "복합 불량", "용접·접촉 불량", "센싱와이어 불량", "온도 센서 불량", "전압 센서 불량", "열 관리 이상", "기타"],
                 )
-                lot_id = st.text_input("LOT / 설비 ID")
+                selected_review_serial = st.selectbox(
+                    "Serial Num",
+                    options=review_serial_options,
+                    index=None,
+                    placeholder="불량 로그의 Serial Num 선택",
+                )
             with r3:
                 severity = st.select_slider("조치 우선순위", options=["낮음", "보통", "높음", "긴급"], value="보통")
                 notes = st.text_area("검토 메모", height=96)
@@ -2239,26 +2324,65 @@ with tab_review:
             if submitted:
                 if not reviewer.strip():
                     st.error("검토자 이름을 입력하세요.")
+                elif selected_review_serial is None:
+                    st.error("검토할 불량 로그의 Serial Num을 선택하세요.")
                 else:
+                    serial_matches = review_fault_events[
+                        review_fault_events["serial_number"]
+                        .fillna("")
+                        .astype(str)
+                        .eq(str(selected_review_serial))
+                    ]
+                    selected_review_fault = serial_matches.iloc[0]
+                    review_id = f"review-{time.time_ns()}"
                     path = append_review(
                         {
+                            "review_id": review_id,
                             "reviewer": reviewer.strip(),
-                            "source_file": summary["source_file"],
-                            "source_path": str(selected_record["path"]) if selected_record is not None else "",
-                            "model_id": summary["model_id"],
-                            "model_version": summary["model_version"],
-                            "model_status": summary["status"],
+                            "source_file": selected_review_fault.get("source_file", ""),
+                            "source_path": selected_review_fault.get("source_path", ""),
+                            "serial_number": str(selected_review_serial),
+                            "model_id": selected_review_fault.get("model_id", ""),
+                            "model_version": selected_review_fault.get("model_version", ""),
+                            "model_status": selected_review_fault.get("model_status", ""),
                             "human_label": human_label,
                             "fault_type": fault_type,
                             "severity": severity,
-                            "lot_id": lot_id,
-                            "fire_rate": summary["fire_rate"],
-                            "score_p95": summary["score_p95"],
-                            "max_consecutive_rows": summary["max_consecutive_rows"],
+                            "fire_rate": selected_review_fault.get("fire_rate", np.nan),
+                            "score_p95": selected_review_fault.get("score_p95", np.nan),
+                            "max_consecutive_rows": selected_review_fault.get(
+                                "max_consecutive_rows",
+                                np.nan,
+                            ),
                             "notes": notes,
                         }
                     )
-                    st.success(f"검토 기록을 저장했습니다: {path.name}")
+                    sync_result = apply_human_review_to_fault_events(
+                        str(selected_review_serial),
+                        human_label,
+                        reviewer=reviewer.strip(),
+                        notes=notes,
+                        review_id=review_id,
+                    )
+                    if human_label == "NORMAL":
+                        sync_text = (
+                            f"동일 Serial Num의 불량 로그 "
+                            f"{sync_result['deleted']}건을 삭제했습니다."
+                        )
+                    elif human_label == "NG":
+                        sync_text = (
+                            f"동일 Serial Num의 불량 로그 "
+                            f"{sync_result['updated']}건을 조치 대기로 변경했습니다."
+                        )
+                    else:
+                        sync_text = (
+                            f"동일 Serial Num의 불량 로그 "
+                            f"{sync_result['updated']}건을 검토 중으로 변경했습니다."
+                        )
+                    st.session_state["saved_review_message"] = (
+                        f"검토 기록을 저장했습니다: {path.name} · {sync_text}"
+                    )
+                    st.rerun()
 
     reviews = load_reviews()
     if reviews.empty:
@@ -2470,6 +2594,7 @@ with tab_fault:
                 if selected_rows
                 else []
             )
+            fault_log_explicitly_selected = bool(selected_rows)
 
             download_col, confirm_col, delete_col = st.columns([1.2, 1.2, 1.5])
             with download_col:
@@ -2635,6 +2760,67 @@ with tab_fault:
                 st.error(f"처분 기준: {selected_fault['disposition_guide']}")
                 st.caption("폐기 여부는 모델이 자동 확정하지 않으며 현장 재계측과 안전 담당자 승인 후 결정합니다.")
 
+            action_status_options = ["신규", "현장 검토 중", "검토 중", "조치 대기", "완료"]
+            final_action_options = [
+                "미결정",
+                "재실험",
+                "센서·하네스 점검",
+                "용접부 점검",
+                "부품 교체 후 재검사",
+                "격리",
+                "폐기 검토",
+                "정상 복귀",
+            ]
+            current_status = str(selected_fault["action_status"])
+            current_action = str(selected_fault["final_action"])
+            st.markdown("#### 처리 상태 및 최종 검토")
+            with st.form(f"fault_action_form_{event_id}"):
+                a1, a2, a3 = st.columns(3)
+                with a1:
+                    action_status = st.selectbox(
+                        "처리 상태",
+                        action_status_options,
+                        index=action_status_options.index(current_status) if current_status in action_status_options else 0,
+                    )
+                with a2:
+                    final_action = st.selectbox(
+                        "최종 조치",
+                        final_action_options,
+                        index=final_action_options.index(current_action) if current_action in final_action_options else 0,
+                    )
+                with a3:
+                    assignee = st.text_input("담당자", value=str(selected_fault["assignee"]))
+                action_notes = st.text_area("조치 메모", value=str(selected_fault["action_notes"]), height=100)
+                action_button_col, action_hint_col = st.columns([1.2, 4])
+                with action_button_col:
+                    action_submitted = st.form_submit_button(
+                        "조치 기록 저장",
+                        type="primary",
+                        disabled=not fault_log_explicitly_selected,
+                        width="stretch",
+                    )
+                with action_hint_col:
+                    if not fault_log_explicitly_selected:
+                        st.caption("조치 기록을 저장할 불량 로그를 선택해주세요.")
+                if action_submitted:
+                    if not assignee.strip():
+                        st.error("담당자 이름을 입력하세요.")
+                    else:
+                        append_fault_action(
+                            {
+                                "event_id": event_id,
+                                "source_file": selected_fault["source_file"],
+                                "serial_number": selected_fault.get("serial_number", ""),
+                                "fault_type": selected_fault["fault_type"],
+                                "action_status": action_status,
+                                "final_action": final_action,
+                                "assignee": assignee.strip(),
+                                "action_notes": action_notes.strip(),
+                            }
+                        )
+                        st.success("조치 기록을 저장했습니다.")
+                        st.rerun()
+
             st.markdown("#### 저장된 조치 기록")
             action_message_key = f"deleted_fault_action_message_{event_id}"
             deleted_action_message = st.session_state.pop(action_message_key, "")
@@ -2649,6 +2835,7 @@ with tab_fault:
                 event_action_history = pd.DataFrame()
 
             action_history_columns = {
+                "serial_number": "Serial Num",
                 "assignee": "담당자",
                 "action_status": "처리 상태",
                 "final_action": "최종 조치",
@@ -2665,6 +2852,23 @@ with tab_fault:
                         "updated_at",
                         ascending=False,
                     )
+                if "serial_number" not in event_action_history.columns:
+                    event_action_history["serial_number"] = selected_fault.get(
+                        "serial_number",
+                        "",
+                    )
+                else:
+                    event_action_history["serial_number"] = (
+                        event_action_history["serial_number"].astype("string").fillna("")
+                    )
+                    serial_text = (
+                        event_action_history["serial_number"]
+                        .str.strip()
+                    )
+                    event_action_history.loc[
+                        serial_text.eq(""),
+                        "serial_number",
+                    ] = selected_fault.get("serial_number", "")
                 action_storage_indices = event_action_history.index.tolist()
                 for column in action_history_columns:
                     if column not in event_action_history.columns:
@@ -2724,55 +2928,6 @@ with tab_fault:
                         action_table_revision + 1
                     )
                     st.rerun()
-
-            action_status_options = ["신규", "검토 중", "조치 대기", "완료"]
-            final_action_options = [
-                "미결정",
-                "재실험",
-                "센서·하네스 점검",
-                "용접부 점검",
-                "부품 교체 후 재검사",
-                "격리",
-                "폐기 검토",
-                "정상 복귀",
-            ]
-            current_status = str(selected_fault["action_status"])
-            current_action = str(selected_fault["final_action"])
-            with st.form(f"fault_action_form_{event_id}"):
-                a1, a2, a3 = st.columns(3)
-                with a1:
-                    action_status = st.selectbox(
-                        "처리 상태",
-                        action_status_options,
-                        index=action_status_options.index(current_status) if current_status in action_status_options else 0,
-                    )
-                with a2:
-                    final_action = st.selectbox(
-                        "최종 조치",
-                        final_action_options,
-                        index=final_action_options.index(current_action) if current_action in final_action_options else 0,
-                    )
-                with a3:
-                    assignee = st.text_input("담당자", value=str(selected_fault["assignee"]))
-                action_notes = st.text_area("조치 메모", value=str(selected_fault["action_notes"]), height=100)
-                action_submitted = st.form_submit_button("조치 기록 저장", type="primary")
-                if action_submitted:
-                    if not assignee.strip():
-                        st.error("담당자 이름을 입력하세요.")
-                    else:
-                        append_fault_action(
-                            {
-                                "event_id": event_id,
-                                "source_file": selected_fault["source_file"],
-                                "fault_type": selected_fault["fault_type"],
-                                "action_status": action_status,
-                                "final_action": final_action,
-                                "assignee": assignee.strip(),
-                                "action_notes": action_notes.strip(),
-                            }
-                        )
-                        st.success("조치 기록을 저장했습니다.")
-                        st.rerun()
 
 
 with tab_models:
