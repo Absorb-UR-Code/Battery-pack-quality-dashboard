@@ -119,6 +119,9 @@ def upsert_fault_event(record: dict[str, Any]) -> Path:
         if duplicate_event:
             return fault_event_log_path()
 
+    if event_id:
+        restore_deleted_fault_event(event_id)
+
     updated = pd.concat([existing, pd.DataFrame([event])], ignore_index=True)
     path = fault_event_log_path()
     _atomic_write_csv(updated, path)
@@ -190,11 +193,50 @@ def load_deleted_fault_event_ids() -> set[str]:
     deleted = pd.read_csv(path, encoding="utf-8-sig")
     if "event_id" not in deleted.columns:
         return set()
+    if "delete_state" not in deleted.columns:
+        deleted["delete_state"] = "DELETED"
+    latest = deleted.drop_duplicates(subset=["event_id"], keep="last")
     return {
         event_id
-        for event_id in deleted["event_id"].dropna().astype(str).str.strip()
-        if event_id
+        for event_id, state in zip(
+            latest["event_id"].fillna("").astype(str).str.strip(),
+            latest["delete_state"].fillna("DELETED").astype(str).str.upper(),
+        )
+        if event_id and state != "RESTORED"
     }
+
+
+def restore_deleted_fault_event(
+    event_id: str,
+    *,
+    reason: str = "재판정으로 불량 로그 재생성",
+) -> bool:
+    """Reactivate an event ID that was previously hidden by a user deletion."""
+    normalized_id = str(event_id).strip()
+    path = fault_event_delete_log_path()
+    if not normalized_id or not path.exists():
+        return False
+
+    history = pd.read_csv(path, encoding="utf-8-sig")
+    if "event_id" not in history.columns:
+        return False
+    if normalized_id not in set(history["event_id"].fillna("").astype(str).str.strip()):
+        return False
+
+    restored = pd.DataFrame(
+        [
+            {
+                "deleted_at": "",
+                "restored_at": datetime.now().isoformat(timespec="seconds"),
+                "event_id": normalized_id,
+                "deleted_by": "",
+                "reason": reason,
+                "delete_state": "RESTORED",
+            }
+        ]
+    )
+    _atomic_write_csv(pd.concat([history, restored], ignore_index=True), path)
+    return True
 
 
 def delete_fault_events(
@@ -242,15 +284,16 @@ def delete_fault_events(
         [
             {
                 "deleted_at": now,
+                "restored_at": "",
                 "event_id": event_id,
                 "deleted_by": deleted_by,
                 "reason": reason,
+                "delete_state": "DELETED",
             }
             for event_id in sorted(ids)
         ]
     )
     updated = pd.concat([deleted, additions], ignore_index=True)
-    updated = updated.drop_duplicates(subset=["event_id"], keep="last")
     _atomic_write_csv(updated, delete_path)
 
     return {

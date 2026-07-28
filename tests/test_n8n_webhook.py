@@ -63,7 +63,19 @@ class N8nWebhookTests(unittest.TestCase):
 
             body, content_type, metadata = build_fault_source_multipart(
                 csv_path,
-                {"event_id": "fault-002", "source_file": "1017_chg.csv"},
+                {
+                    "event_id": "fault-002",
+                    "source_file": "1017_chg.csv",
+                    "serial_number": "798",
+                    "fault_type": "용접·접촉 불량",
+                    "fault_confidence": 0.873,
+                    "fault_confidence_percent": "87.3%",
+                    "risk_level": 2,
+                    "risk_label": "위험도 2",
+                    "rpn": 168,
+                    "suspect_sensors": "M07CV02, M07CV08",
+                    "recommended_action": "접촉부 재검사 및 격리",
+                },
                 sent_at="2026-07-28T12:00:00",
                 boundary="TestBoundary",
             )
@@ -75,6 +87,14 @@ class N8nWebhookTests(unittest.TestCase):
         self.assertEqual(metadata["csv_row_count"], 2)
         self.assertEqual(metadata["trigger_event_id"], "fault-002")
         self.assertEqual(metadata["csv_size_bytes"], len(csv_bytes))
+        self.assertEqual(metadata["schema_version"], "2.1")
+        self.assertEqual(metadata["fault_type"], "용접·접촉 불량")
+        self.assertEqual(metadata["fault_confidence"], 0.873)
+        self.assertEqual(metadata["risk_level"], 2)
+        self.assertEqual(metadata["risk_label"], "위험도 2")
+        self.assertEqual(metadata["rpn"], 168)
+        self.assertEqual(metadata["suspect_sensors"], "M07CV02, M07CV08")
+        self.assertEqual(metadata["recommended_action"], "접촉부 재검사 및 격리")
         self.assertIn(
             b'name="fault_source_csv"; filename="Test09_NG_dchg.csv"',
             body,
@@ -261,6 +281,63 @@ class N8nWebhookTests(unittest.TestCase):
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved.loc[0, "n8n_delivery_status"], "FAILED")
         self.assertEqual(saved.loc[0, "n8n_delivery_error"], "timed out")
+
+    def test_deleted_fault_can_be_recreated_and_uploaded_again(self) -> None:
+        delivery = N8nDeliveryResult(
+            enabled=True,
+            attempted=True,
+            sent=True,
+            status_code=200,
+            response_preview='{"received":true}',
+            delivered_at="2026-07-28T13:00:00",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fault_dir = Path(temp_dir) / "fault"
+            source_path = Path(temp_dir) / "Test06_NG_chg.csv"
+            self._write_fault_log(
+                source_path,
+                [
+                    {"order": 1, "M07CV02": 4.08},
+                    {"order": 2, "M07CV02": 3.92},
+                ],
+            )
+            record = {
+                "event_id": "ng6-repeatable-event",
+                "source_file": source_path.name,
+                "source_path": str(source_path),
+                "fault_type": "용접·접촉 불량",
+                "fault_confidence": 0.91,
+                "risk_level": 1,
+                "risk_label": "위험도 1",
+                "rpn": 84,
+                "suspect_sensors": "M07CV02",
+                "recommended_action": "접촉부 재검사",
+            }
+            with (
+                patch.object(storage, "FAULT_DIR", fault_dir),
+                patch.object(
+                    storage,
+                    "send_fault_source_csv_to_n8n",
+                    return_value=delivery,
+                ) as sender,
+            ):
+                storage.upsert_fault_event(record)
+                first_saved = storage.load_fault_event_log()
+                storage.delete_fault_events([record["event_id"]])
+                self.assertIn(
+                    record["event_id"],
+                    storage.load_deleted_fault_event_ids(),
+                )
+
+                storage.upsert_fault_event(record)
+                recreated = storage.load_fault_event_log()
+                deleted_after_recreate = storage.load_deleted_fault_event_ids()
+
+        self.assertEqual(len(first_saved), 1)
+        self.assertEqual(len(recreated), 1)
+        self.assertEqual(recreated.loc[0, "event_id"], record["event_id"])
+        self.assertNotIn(record["event_id"], deleted_after_recreate)
+        self.assertEqual(sender.call_count, 2)
 
 
 if __name__ == "__main__":

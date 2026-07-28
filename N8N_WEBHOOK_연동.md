@@ -6,12 +6,15 @@ Webhook으로 전송한다. 누적 불량 로그 파일 자체는 전송하지 �
 
 ## 동작 원칙
 
+- 실시간 재생에서는 원본 CSV의 **마지막 행까지 모델 판정이 끝난 뒤** 파일당 대표 불량 로그 1건을 생성한다.
+- 재생 중간에 불량 윈도우가 검출되어도 전체 행 판정이 끝나기 전에는 불량 로그와 Webhook 요청을 만들지 않는다.
 - CSV 저장을 먼저 완료한 뒤 Webhook을 호출한다.
 - 전송 형식은 `multipart/form-data`이며 파일 필드명은 `fault_source_csv`이다.
 - 첨부 파일명은 불량 판정을 받은 원본 CSV 이름을 그대로 사용한다.
 - 첨부파일에는 해당 원본 CSV의 모든 행과 모든 열이 포함된다.
 - 다른 원본 CSV에서 새 불량이 발생하면 해당 파일만 별도로 전송한다.
 - 같은 `event_id`가 Streamlit 재실행으로 다시 저장되어도 n8n에는 다시 보내지 않는다.
+- 사용자가 불량 로그를 삭제하고 해당 파일을 초기화·재판정하면 새 검사 실행 ID로 로그를 다시 만들고 n8n에도 다시 전송한다.
 - Webhook 오류나 시간 초과가 발생해도 모델 판정과 CSV 저장은 계속된다.
 - 전송 결과는 로컬 CSV의 `n8n_delivery_status`, `n8n_delivery_at`,
   `n8n_http_status`, `n8n_delivery_error` 열에 남는다.
@@ -23,12 +26,24 @@ Multipart 요청에는 다음 항목이 포함된다.
 | 필드 | 내용 |
 | --- | --- |
 | `fault_source_csv` | 이번에 불량 판정을 받은 원본 CSV 전체 파일 |
-| `metadata` | 행 수, 파일 크기, SHA-256, 트리거 이벤트 정보가 담긴 JSON 문자열 |
+| `metadata` | 행 수, 파일 크기, SHA-256, 판정·조치 정보가 담긴 JSON 문자열 |
 | `event_id` | 이번 전송을 발생시킨 불량 이벤트 ID |
 | `row_count` | CSV 전체 데이터 행 수 |
 
 HTTP 헤더에는 `X-Battery-Event-Id`와 `X-Battery-Log-SHA256`도 함께 들어간다.
 n8n에서 `event_id` 또는 SHA-256을 기준으로 추가 중복 방지를 적용할 수 있다.
+
+`metadata`의 스키마 버전은 `2.1`이며 다음 판정·조치 필드를 포함한다.
+
+| JSON 키 | 내용 |
+| --- | --- |
+| `fault_type` | 최종 대표 불량 유형 |
+| `fault_confidence` | 유형 신뢰도 원값(0~1) |
+| `fault_confidence_percent` | 화면 표시용 유형 신뢰도 |
+| `risk_level`, `risk_label` | PFMEA 기반 위험도 |
+| `rpn` | 최종 대표 RPN |
+| `suspect_sensors` | 문제 가능성이 높은 센서 목록 |
+| `recommended_action` | PFMEA 기반 권장 조치 |
 
 ## Streamlit Community Cloud Secrets
 

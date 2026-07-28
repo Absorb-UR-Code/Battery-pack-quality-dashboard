@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from core.config import load_settings
 from core.data_catalog import audit_data_quality, build_catalog, detect_sensor_columns, read_csv_resilient
 from core.diagnostic_display import (
+    evaluated_row_positions,
     fault_domain_coverage,
     latest_fault_payload,
     latest_scored_prediction,
@@ -67,6 +68,8 @@ def main() -> None:
     assert not sparse_flag and sparse_score == 0.12 and sparse_row == 120
     sparse_flag, sparse_score, sparse_row = latest_scored_prediction(sparse_rows, 145)
     assert sparse_flag and sparse_score == 0.88 and sparse_row == 140
+    assert evaluated_row_positions(sparse_rows, 150).tolist() == [99, 119, 139]
+    assert evaluated_row_positions(sparse_rows, 150, end_position=121).tolist() == [99, 119]
     assert [row for row, _ in reached_fault_payloads(sparse_result, 101)] == [100]
     assert [row for row, _ in reached_fault_payloads(sparse_result, 145)] == [100, 140]
     payload_row, payload = latest_fault_payload(sparse_result, 145)
@@ -88,6 +91,39 @@ def main() -> None:
     )
     dense_flag, dense_score, dense_row = latest_scored_prediction(dense_rows, 105)
     assert dense_flag and dense_score == 0.8 and dense_row == 105
+
+    representative_row_event = build_fault_event(
+        {
+            "summary": {
+                "status": "NG_REVIEW",
+                "model_id": "fault-row-selection",
+                "model_version": "1.0",
+                "mode": "CHG",
+            },
+            "details": {
+                "window_size": 100,
+                "fault_by_row": {
+                    "100": {
+                        "fault_type": "용접 불량",
+                        "fault_confidence": 0.37,
+                        "suspect_sensors": ["M07CV02"],
+                    },
+                    "140": {
+                        "fault_type": "용접 불량",
+                        "fault_confidence": 0.91,
+                        "suspect_sensors": ["M07CV08"],
+                    },
+                },
+            },
+        },
+        source_file="Test06_NG_chg.csv",
+        origin="completed-file",
+        occurrence_key="run-1",
+    )
+    assert representative_row_event is not None
+    assert representative_row_event["detected_row"] == 140
+    assert representative_row_event["fault_confidence"] == 0.91
+    assert representative_row_event["suspect_sensors"] == "M07CV08"
 
     component_frontend = _COMPONENT_DIR / "index.html"
     assert component_frontend.is_file(), component_frontend

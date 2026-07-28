@@ -23,15 +23,16 @@ from core.data_catalog import (
 )
 from core.diagnostic_display import (
     build_normal_reference,
+    evaluated_row_positions,
     fault_domain_coverage,
     kpi_log_styler,
     latest_fault_payload,
     latest_scored_prediction,
-    reached_fault_payloads,
     sensor_matrix_styler,
 )
 from core.features import build_sensor_kpis, module_temperature_summary, sensor_deviation_ranking, sensor_snapshot_matrix
 from core.fault_log import (
+    build_completed_fault_event,
     build_fault_event,
     display_mode,
     extract_fault_metadata,
@@ -313,9 +314,6 @@ def persist_file_fault_event(
     spec: ModelSpec,
 ) -> dict[str, object] | None:
     occurrence_key = file_fault_occurrence_key(record, spec)
-    processed_keys = st.session_state.setdefault("processed_file_fault_occurrences", set())
-    if occurrence_key in processed_keys:
-        return None
 
     detected_at = None
     time_labels = measurement_time_labels(frame)
@@ -336,7 +334,6 @@ def persist_file_fault_event(
     )
     if event:
         upsert_fault_event(event)
-    processed_keys.add(occurrence_key)
     return event
 
 
@@ -578,6 +575,50 @@ def begin_live_fault_run() -> str:
     st.session_state["ops_live_run_id"] = run_id
     st.session_state["logged_live_fault_event_ids"] = set()
     return run_id
+
+
+def persist_completed_live_fault_event(
+    result: dict[str, object] | None,
+    *,
+    record: pd.Series,
+    frame: pd.DataFrame,
+    position: int,
+    total_rows: int,
+) -> dict[str, object] | None:
+    """Persist one final fault event only after every source row has been replayed."""
+    run_id = str(st.session_state.get("ops_live_run_id", "")).strip()
+    if not run_id:
+        run_id = begin_live_fault_run()
+    event = build_completed_fault_event(
+        result,
+        position=position,
+        total_rows=total_rows,
+        source_file=str(record["file_name"]),
+        source_path=str(record["path"]),
+        source_frame=frame,
+        mode=str(record["mode"]),
+        origin="실시간 파일 완료 판정",
+        occurrence_key=run_id,
+    )
+    if not event:
+        return None
+
+    logged_ids = st.session_state.setdefault("logged_live_fault_event_ids", set())
+    event_id = str(event.get("event_id", "")).strip()
+    if not event_id or event_id in logged_ids:
+        return None
+
+    event_row = pd.to_numeric(
+        pd.Series([event.get("detected_row")]),
+        errors="coerce",
+    ).iloc[0]
+    time_labels = measurement_time_labels(frame)
+    if np.isfinite(event_row) and 1 <= int(event_row) <= len(time_labels):
+        event["detected_at"] = str(time_labels.iloc[int(event_row) - 1])
+
+    upsert_fault_event(event)
+    logged_ids.add(event_id)
+    return event
 
 
 def measurement_kpi_log(
@@ -1135,11 +1176,18 @@ if selected_record is not None:
             if isinstance(model_result, dict)
             else pd.DataFrame()
         )
-        advance_shared_live_playback(
+        current_position = advance_shared_live_playback(
             total_rows=ops_total_rows,
             row_result=row_result,
             refresh_seconds=float(live_refresh_seconds),
             step_size=int(live_step_size),
+        )
+        persist_completed_live_fault_event(
+            model_result,
+            record=selected_record,
+            frame=ops_live_df,
+            position=current_position,
+            total_rows=ops_total_rows,
         )
 
     run_global_live_heartbeat()
@@ -1281,25 +1329,13 @@ with tab_live:
                         model_window_size,
                     )
                     window_anomaly_mask = anomaly_coverage[start:position]
-                    logged_ids = st.session_state.setdefault("logged_live_fault_event_ids", set())
-                    for event_row, _ in reached_fault_payloads(live_model_result, position):
-                        if event_row > len(live_time_labels):
-                            continue
-                        event = build_fault_event(
-                            live_model_result,
-                            source_file=selected_record["file_name"],
-                            source_path=str(selected_record["path"]),
-                            source_frame=live_df,
-                            mode=str(selected_record["mode"]),
-                            detected_at=live_time_labels.iloc[event_row - 1],
-                            detected_row=event_row,
-                            origin="실시간 판정",
-                            status_override="NG_REVIEW",
-                            occurrence_key=str(st.session_state.get("ops_live_run_id", "")),
-                        )
-                        if event and event["event_id"] not in logged_ids:
-                            upsert_fault_event(event)
-                            logged_ids.add(event["event_id"])
+                    persist_completed_live_fault_event(
+                        live_model_result,
+                        record=selected_record,
+                        frame=live_df,
+                        position=position,
+                        total_rows=total_rows,
+                    )
                     warmup_rows = int(live_model_result.get("details", {}).get("warmup_rows", 0))
                     if position <= warmup_rows:
                         banner_class = "live-banner live-banner-review"
@@ -1554,6 +1590,13 @@ with tab_live_visual:
                         schematic_total_rows,
                     ),
                 )
+                persist_completed_live_fault_event(
+                    schematic_result,
+                    record=selected_record,
+                    frame=schematic_df,
+                    position=position,
+                    total_rows=schematic_total_rows,
+                )
                 current_flag, _, latest_scored_row = latest_scored_prediction(
                     row_result,
                     position,
@@ -1696,40 +1739,54 @@ with tab_daily:
                     }
                     st.session_state["live_model_analysis"] = cached_daily_model
                 daily_model_result = cached_daily_model["result"]
-                persist_file_fault_event(
-                    daily_model_result,
-                    record=selected_record,
-                    frame=log_df,
-                    spec=active_model,
-                )
             daily_fault_domains = fault_domain_coverage(daily_model_result, len(log_df))
+            evaluated_positions = evaluated_row_positions(
+                daily_model_result.get("row_result")
+                if isinstance(daily_model_result, dict)
+                else None,
+                len(log_df),
+            )
 
             _, _, log_timestamp = resolve_time_axis(log_df)
-            if log_timestamp is not None and log_timestamp.notna().any():
-                available_dates = sorted(log_timestamp.dropna().dt.date.unique())
+            if (
+                log_timestamp is not None
+                and log_timestamp.notna().any()
+                and evaluated_positions.size
+            ):
+                evaluated_timestamps = log_timestamp.iloc[evaluated_positions]
+                available_dates = sorted(evaluated_timestamps.dropna().dt.date.unique())
+            else:
+                available_dates = []
+
+            if available_dates:
                 selected_date = st.selectbox(
                     "조회 날짜",
                     options=available_dates,
                     index=len(available_dates) - 1,
                     key=f"daily_date_{selected_record['file_name']}",
                 )
-                date_mask = log_timestamp.dt.date.eq(selected_date)
-                day_df = log_df.loc[date_mask].copy()
-                day_source_positions = np.flatnonzero(date_mask.to_numpy())
+                date_matches = log_timestamp.iloc[evaluated_positions].dt.date.eq(selected_date)
+                day_source_positions = evaluated_positions[date_matches.to_numpy()]
+                day_df = log_df.iloc[day_source_positions].copy()
+                day_times = log_timestamp.iloc[day_source_positions].dropna()
                 duration_seconds = (
-                    log_timestamp.loc[date_mask].max() - log_timestamp.loc[date_mask].min()
-                ).total_seconds()
+                    (day_times.max() - day_times.min()).total_seconds()
+                    if len(day_times) >= 2
+                    else 0.0
+                )
                 date_text = str(selected_date)
             else:
-                day_df = log_df.copy()
-                day_source_positions = np.arange(len(day_df), dtype=int)
+                day_source_positions = evaluated_positions
+                day_df = log_df.iloc[day_source_positions].copy()
                 duration_seconds = np.nan
-                date_text = "시간 정보 없음"
+                date_text = "판정 행 없음" if not len(day_source_positions) else "시간 정보 없음"
 
             d1, d2, d3 = st.columns(3)
             d1.metric("조회 기준", date_text)
-            d2.metric("측정 행", f"{len(day_df):,}행")
+            d2.metric("모델 판정 행", f"{len(day_df):,}행")
             d3.metric("측정 구간", f"{duration_seconds / 60:.1f}분" if np.isfinite(duration_seconds) else "-")
+            if not len(day_source_positions):
+                st.info("현재 파일에서 모델 점수가 계산된 행이 없습니다.")
 
             daily_export = measurement_kpi_log(
                 log_df,
@@ -1766,7 +1823,11 @@ with tab_daily:
                 mime="text/csv",
                 key="daily_log_download",
             )
-            st.caption("화면은 최근 500행을 표시합니다. 상세 확인할 행을 클릭하면 아래에 176개 전압·32개 온도 센서값이 표시됩니다.")
+            st.caption(
+                "모델이 실제로 점수와 정상·불량 판정을 생성한 행만 표시합니다. "
+                "화면은 최근 500개 판정 행을 보여주며, 행을 클릭하면 아래에 "
+                "176개 전압·32개 온도 센서값이 표시됩니다."
+            )
 
             selection = getattr(log_selection, "selection", None)
             selected_rows = list(getattr(selection, "rows", [])) if selection is not None else []

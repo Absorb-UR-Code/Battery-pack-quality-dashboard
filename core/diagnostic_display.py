@@ -242,6 +242,39 @@ def latest_scored_prediction(
     return flag, float(score) if np.isfinite(score) else float("nan"), latest_position + 1
 
 
+def evaluated_row_positions(
+    row_result: pd.DataFrame | None,
+    row_count: int,
+    *,
+    end_position: int | None = None,
+) -> np.ndarray:
+    """Return zero-based source rows for which the model produced a finite score."""
+    row_count = max(0, int(row_count))
+    if not isinstance(row_result, pd.DataFrame) or row_result.empty or row_count == 0:
+        return np.asarray([], dtype=int)
+
+    if "score" in row_result.columns:
+        evaluated = pd.to_numeric(row_result["score"], errors="coerce").notna().to_numpy()
+    elif "predicted_anomaly" in row_result.columns:
+        evaluated = row_result["predicted_anomaly"].notna().to_numpy()
+    else:
+        return np.asarray([], dtype=int)
+
+    if "row_index" in row_result.columns:
+        source_positions = (
+            pd.to_numeric(row_result["row_index"], errors="coerce").to_numpy(dtype=float) - 1
+        )
+    else:
+        source_positions = np.arange(len(row_result), dtype=float)
+
+    valid = evaluated & np.isfinite(source_positions)
+    positions = source_positions[valid].astype(int, copy=False)
+    positions = positions[(positions >= 0) & (positions < row_count)]
+    if end_position is not None:
+        positions = positions[positions < max(0, min(int(end_position), row_count))]
+    return np.unique(positions)
+
+
 def reached_fault_payloads(
     result: dict[str, Any] | None,
     end_position: int,

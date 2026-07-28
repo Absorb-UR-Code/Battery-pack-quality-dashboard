@@ -323,15 +323,35 @@ def _infer_detected_row(result: dict[str, Any]) -> int | None:
 
     fault_by_row = details.get("fault_by_row", {})
     if isinstance(fault_by_row, dict):
-        explicit_rows: list[int] = []
-        for row_key in fault_by_row:
+        explicit_rows: list[tuple[float, int]] = []
+        for row_key, payload in fault_by_row.items():
             try:
-                explicit_rows.append(int(float(str(row_key))))
+                row_number = int(float(str(row_key)))
             except (TypeError, ValueError):
                 continue
-        valid_explicit_rows = [row for row in explicit_rows if row >= 1]
+            if row_number < 1:
+                continue
+            confidence = np.nan
+            if isinstance(payload, dict):
+                try:
+                    confidence = float(payload.get("fault_confidence", np.nan))
+                except (TypeError, ValueError):
+                    confidence = np.nan
+            explicit_rows.append(
+                (
+                    confidence if np.isfinite(confidence) else float("-inf"),
+                    row_number,
+                )
+            )
+        valid_explicit_rows = [item for item in explicit_rows if item[1] >= 1]
         if valid_explicit_rows:
-            return min(valid_explicit_rows)
+            # A completed file gets one representative event. Prefer the
+            # Stage-2 payload with the strongest type confidence, then the
+            # earliest row when confidences tie.
+            return sorted(
+                valid_explicit_rows,
+                key=lambda item: (-item[0], item[1]),
+            )[0][1]
 
     row_result = result.get("row_result")
     if not isinstance(row_result, pd.DataFrame) or row_result.empty:
@@ -656,6 +676,36 @@ def build_fault_event(
     event["fault_confidence_percent"] = _percent_text(event.get("fault_confidence"))
     event["risk_label"] = f"위험도 {int(event.get('risk_level', 0) or 0)}"
     return event
+
+
+def build_completed_fault_event(
+    result: dict[str, Any] | None,
+    *,
+    position: int,
+    total_rows: int,
+    source_file: str,
+    source_path: str = "",
+    source_frame: pd.DataFrame | None = None,
+    mode: str = "UNKNOWN",
+    detected_at: str | None = None,
+    detected_row: int | None = None,
+    origin: str = "실시간 파일 완료 판정",
+    occurrence_key: str | None = None,
+) -> dict[str, Any] | None:
+    """Build one fault event only after every source row has been evaluated."""
+    if result is None or total_rows <= 0 or int(position) < int(total_rows):
+        return None
+    return build_fault_event(
+        result,
+        source_file=source_file,
+        source_path=source_path,
+        source_frame=source_frame,
+        mode=mode,
+        detected_at=detected_at,
+        detected_row=detected_row,
+        origin=origin,
+        occurrence_key=occurrence_key,
+    )
 
 
 def batch_fault_events(frame: pd.DataFrame, *, batch_id: str, detected_at: str) -> pd.DataFrame:

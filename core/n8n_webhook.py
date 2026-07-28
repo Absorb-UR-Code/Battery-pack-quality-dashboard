@@ -181,7 +181,7 @@ def build_fault_source_metadata(
     path = Path(csv_path)
     csv_payload = payload if payload is not None else path.read_bytes()
     return {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "event_type": "battery_pack_fault_source_csv",
         "webhook_sent_at": sent_at,
         "trigger_event_id": str(trigger_record.get("event_id", "")).strip(),
@@ -193,6 +193,20 @@ def build_fault_source_metadata(
         "csv_row_count": _csv_row_count(csv_payload),
         "csv_size_bytes": len(csv_payload),
         "csv_sha256": hashlib.sha256(csv_payload).hexdigest(),
+        "fault_type": str(trigger_record.get("fault_type", "")).strip(),
+        "fault_confidence": _json_safe(trigger_record.get("fault_confidence")),
+        "fault_confidence_percent": str(
+            trigger_record.get("fault_confidence_percent", "")
+        ).strip(),
+        "risk_level": _json_safe(trigger_record.get("risk_level")),
+        "risk_label": str(trigger_record.get("risk_label", "")).strip(),
+        "rpn": _json_safe(trigger_record.get("rpn")),
+        "suspect_sensors": str(
+            trigger_record.get("suspect_sensors", "")
+        ).strip(),
+        "recommended_action": str(
+            trigger_record.get("recommended_action", "")
+        ).strip(),
     }
 
 
