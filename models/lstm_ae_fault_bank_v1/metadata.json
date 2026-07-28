@@ -10,40 +10,67 @@
   "preprocessing": {
     "feature_order": "176 naturally sorted cell-voltage sensors followed by 32 naturally sorted temperature sensors",
     "relative_transform": "row sensor value minus same-row sensor-family mean",
-    "scaler": "scaler.npz",
+    "scaler": "scaler.npz (제공된 스케일러.npz와 SHA-256 동일)",
     "window_size": 100,
     "training_stride": 20,
     "operational_stride": 20
   },
   "decision": {
-    "window_rule": "raw reconstruction-error argmin over five autoencoders",
+    "window_rule": "raw reconstruction-error argmin over six autoencoders selected by CHG/DCHG mode",
     "file_rule": "select the window with maximum normal-AE error, then apply raw argmin",
     "class_order": [
       "정상",
-      "용량 불량",
+      "저용량 불량",
+      "고저항 불량",
       "복합 불량",
       "센싱와이어 불량",
       "온도 센서 불량"
-    ]
+    ],
+    "mode_specific_models": {
+      "CHG": {
+        "정상": "lstm_ae_정상_cvaeaug.keras",
+        "저용량 불량": "lstm_ae_low_capacity_chg.keras",
+        "고저항 불량": "lstm_ae_high_resistance_chg.keras"
+      },
+      "DCHG": {
+        "정상": "lstm_ae_정상_cvaeaug.keras",
+        "저용량 불량": "lstm_ae_low_capacity_dchg.keras",
+        "고저항 불량": "lstm_ae_high_resistance_dchg.keras"
+      },
+      "COMMON": {
+        "복합 불량": "lstm_ae_복합불량_v1.keras",
+        "센싱와이어 불량": "lstm_ae_센싱와이어불량_v1.keras",
+        "온도 센서 불량": "lstm_ae_온도센서불량_v1.keras"
+      }
+    }
   },
-  "internal_replay": {
+  "integration_replay_20260728": {
+    "evaluation_unit": "file",
     "window_stride": 20,
-    "tn": 462,
-    "fp": 51,
+    "evaluated_files": 13,
+    "normal_files": 4,
+    "fault_files": 9,
+    "tn": 4,
+    "fp": 0,
     "fn": 0,
-    "tp": 616,
-    "accuracy": 0.9548272808,
-    "precision": 0.9235382309,
+    "tp": 9,
+    "accuracy": 1.0,
+    "precision": 1.0,
     "recall": 1.0,
-    "f1": 0.9602494154,
-    "specificity": 0.9005847953,
-    "file_type_accuracy": 1.0
+    "f1": 1.0,
+    "specificity": 1.0,
+    "fault_type_correct": 9,
+    "fault_type_total": 9,
+    "fault_type_accuracy": 1.0,
+    "evidence_file": "integration_validation_20260728.csv",
+    "independence_notice": "개발·증강 유래 분포와 겹칠 수 있는 내부 재생 결과이며 독립 외부 일반화 성능이 아닙니다."
   },
   "limitations": [
+    "신규 저용량·고저항 파일은 모델 개발 또는 검증에 사용된 분포와 겹칠 수 있어 독립 외부 검증으로 간주하지 않습니다.",
+    "충전과 방전은 서로 다른 저용량·고저항 오토인코더를 사용하므로 파일명 또는 운전 신호에서 모드가 식별되어야 합니다.",
     "Test05-Test09 real events and augmentations derived from them were used for training.",
-    "The reported Test01-Test09 metrics are internal replay results, not independent external validation.",
-    "Test04 produced 18 false-positive windows and Test05 normal segments produced 33 false-positive windows at stride 20.",
-    "Using stride 1 instead of the validated stride 20 changed the Test04 pack verdict to a false positive, so this candidate is restricted to stride 20.",
+    "The reported 13-file metrics are internal replay results, not independent external validation.",
+    "Operational inference remains fixed to the validated 100-row window and stride 20 configuration.",
     "Similarity values shown as fault confidence are not calibrated probabilities.",
     "The composite-fault autoencoder plateaued early and remains structurally unstable."
   ]

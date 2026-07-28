@@ -77,6 +77,14 @@ FAULT_TYPE_ALIASES = {
     "capacity": "용량 불량",
     "capacity fault": "용량 불량",
     "용량불량": "용량 불량",
+    "low capacity": "저용량 불량",
+    "low_capacity": "저용량 불량",
+    "low capacity fault": "저용량 불량",
+    "저용량불량": "저용량 불량",
+    "high resistance": "고저항 불량",
+    "high_resistance": "고저항 불량",
+    "high resistance fault": "고저항 불량",
+    "고저항불량": "고저항 불량",
     "composite": "복합 불량",
     "composite fault": "복합 불량",
     "복합불량": "복합 불량",
@@ -104,6 +112,24 @@ FAULT_TYPE_ALIASES = {
 
 
 PFMEA_GUIDE = {
+    "저용량 불량": {
+        "pfmea_ng_codes": "NG5",
+        "rpn_values": [84, 42, 63],
+        "recommended_action": (
+            "샘플링 비율 상향 및 배치별 grade 분리 · 인터락 강화 및 알람 도입 · "
+            "매칭 알고리즘 tolerance 재산정"
+        ),
+        "disposition_guide": "용량 재시험 후 기준 미달 팩은 출하 보류하고 셀 매칭·열화 원인을 점검",
+    },
+    "고저항 불량": {
+        "pfmea_ng_codes": "NG6",
+        "rpn_values": [96, 63, 84, 54],
+        "recommended_action": (
+            "Power 관리 강화 및 검교정 주기 단축 · 지그 마모 주기 자동 관리 · "
+            "체결 토크 자동 관리 및 이력 기록 · 세정 자동화 검토"
+        ),
+        "disposition_guide": "접속·용접부 전압강하와 국부 발열을 재검사하고 기준 초과 시 재작업",
+    },
     "용량 불량": {
         "pfmea_ng_codes": "NG5",
         "rpn_values": [84, 42, 63],

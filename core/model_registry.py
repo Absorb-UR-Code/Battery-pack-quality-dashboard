@@ -297,7 +297,15 @@ def score_dataframe(spec: ModelSpec, df: pd.DataFrame, source_file: str) -> dict
         scores, threshold, details = _statistical_guard(features)
         predictions = scores >= threshold
     elif spec.model_type == "custom":
-        result = model.predict(df, {"spec": spec.to_dict(), "metadata": metadata})
+        result = model.predict(
+            df,
+            {
+                "spec": spec.to_dict(),
+                "metadata": metadata,
+                "source_file": source_file,
+                "mode": infer_mode_from_features(features),
+            },
+        )
         scores = np.asarray(result["scores"], dtype=float)
         threshold = float(result.get("threshold", spec.threshold))
         predictions = np.asarray(result.get("predictions", scores >= threshold), dtype=bool)

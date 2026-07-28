@@ -1,0 +1,14 @@
+﻿file,rows,mode,status,pack_class,fault_type,confidence,valid_windows
+Test01_OK_chg.csv,1723,CHG,NORMAL,정상,,,82
+Test02_OK_dchg.csv,1019,DCHG,NORMAL,정상,,,46
+Test03_OK_chg.csv,1421,CHG,NORMAL,정상,,,67
+Test04_OK_dchg.csv,1505,DCHG,NORMAL,정상,,,71
+Test05_NG_chg.csv,5016,CHG,NG_REVIEW,저용량 불량,저용량 불량,0.2430996298789978,246
+Test06_NG_chg.csv,854,CHG,NG_REVIEW,복합 불량,복합 불량,0.7446066737174988,38
+Test07_NG_dchg.csv,4594,DCHG,NG_REVIEW,센싱와이어 불량,센싱와이어 불량,0.2647078335285187,225
+Test08_NG_chg.csv,2396,CHG,NG_REVIEW,온도 센서 불량,온도 센서 불량,0.23313361406326294,115
+Test09_NG_dchg.csv,4864,DCHG,NG_REVIEW,온도 센서 불량,온도 센서 불량,0.27191710472106934,239
+Test_high_resistance_chg_NG_labeled.csv,2370,CHG,NG_REVIEW,고저항 불량,고저항 불량,0.4966828525066376,114
+Test_high_resistance_dchg_NG_labeled.csv,1759,DCHG,NG_REVIEW,고저항 불량,고저항 불량,0.20774966478347778,83
+Test_low_capacity_chg_NG_labeled.csv,2370,CHG,NG_REVIEW,저용량 불량,저용량 불량,0.5838078856468201,114
+Test_low_capacity_dchg_NG_labeled.csv,1759,DCHG,NG_REVIEW,저용량 불량,저용량 불량,0.6961678266525269,83

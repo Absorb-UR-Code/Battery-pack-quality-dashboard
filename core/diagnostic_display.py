@@ -179,7 +179,19 @@ def _fault_domains(payload: dict[str, Any]) -> set[str]:
         domains.add("temperature")
     if any(
         token in fault_type
-        for token in ["전압", "용량", "용접", "접촉", "센싱와이어", "voltage", "capacity", "weld", "wire"]
+        for token in [
+            "전압",
+            "용량",
+            "저항",
+            "용접",
+            "접촉",
+            "센싱와이어",
+            "voltage",
+            "capacity",
+            "resistance",
+            "weld",
+            "wire",
+        ]
     ):
         domains.add("voltage")
     if "CV" in sensor_text:

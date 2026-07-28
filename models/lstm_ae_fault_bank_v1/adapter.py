@@ -1,4 +1,4 @@
-"""Inference adapter for the five-model LSTM autoencoder fault bank.
+"""Inference adapter for the mode-aware LSTM autoencoder fault bank.
 
 This package is intentionally registered as a validation candidate. The
 supplied models were trained with Test05-Test09 events and derived
@@ -26,18 +26,30 @@ EXPECTED_TEMP_COUNT = 32
 
 CATEGORIES = (
     "정상",
-    "용량 불량",
+    "저용량 불량",
+    "고저항 불량",
     "복합 불량",
     "센싱와이어 불량",
     "온도 센서 불량",
 )
-MODEL_FILES = (
-    "lstm_ae_정상_v1.keras",
-    "lstm_ae_용량불량_v1.keras",
-    "lstm_ae_복합불량_v1.keras",
-    "lstm_ae_센싱와이어불량_v1.keras",
-    "lstm_ae_온도센서불량_v1.keras",
-)
+MODEL_FILES_BY_MODE = {
+    "CHG": (
+        "lstm_ae_정상_cvaeaug.keras",
+        "lstm_ae_low_capacity_chg.keras",
+        "lstm_ae_high_resistance_chg.keras",
+        "lstm_ae_복합불량_v1.keras",
+        "lstm_ae_센싱와이어불량_v1.keras",
+        "lstm_ae_온도센서불량_v1.keras",
+    ),
+    "DCHG": (
+        "lstm_ae_정상_cvaeaug.keras",
+        "lstm_ae_low_capacity_dchg.keras",
+        "lstm_ae_high_resistance_dchg.keras",
+        "lstm_ae_복합불량_v1.keras",
+        "lstm_ae_센싱와이어불량_v1.keras",
+        "lstm_ae_온도센서불량_v1.keras",
+    ),
+}
 
 
 def _natural_sensor_key(column: str) -> tuple[int, ...]:
@@ -83,9 +95,27 @@ def _relative_features(
     return np.concatenate([cv_relative, temp_relative], axis=1), cv_columns, temp_columns
 
 
-@lru_cache(maxsize=2)
+def _resolve_mode(context: dict[str, Any]) -> str:
+    raw_mode = str(context.get("mode", "")).strip().upper()
+    if raw_mode in MODEL_FILES_BY_MODE:
+        return raw_mode
+
+    source_file = str(context.get("source_file", "")).lower()
+    if "dchg" in source_file or "discharge" in source_file:
+        return "DCHG"
+    if "chg" in source_file or "charge" in source_file:
+        return "CHG"
+
+    raise ValueError(
+        "LSTM-AE 모드별 모델을 선택할 수 없습니다. "
+        "파일명에 chg/dchg를 포함하거나 충·방전 모드를 제공하세요."
+    )
+
+
+@lru_cache(maxsize=4)
 def _load_assets(
     root_text: str,
+    mode: str,
     asset_signature: tuple[int, ...],
 ) -> tuple[tuple[Any, ...], np.ndarray, np.ndarray]:
     del asset_signature
@@ -93,7 +123,7 @@ def _load_assets(
     from tensorflow import keras
 
     root = Path(root_text)
-    model_paths = [root / file_name for file_name in MODEL_FILES]
+    model_paths = [root / file_name for file_name in MODEL_FILES_BY_MODE[mode]]
     scaler_path = root / "scaler.npz"
     for path in [*model_paths, scaler_path]:
         if not path.exists():
@@ -112,13 +142,15 @@ def _load_assets(
     return models, mean, std
 
 
-def _assets(root: Path) -> tuple[tuple[Any, ...], np.ndarray, np.ndarray]:
-    paths = [root / file_name for file_name in MODEL_FILES] + [root / "scaler.npz"]
+def _assets(root: Path, mode: str) -> tuple[tuple[Any, ...], np.ndarray, np.ndarray]:
+    paths = [root / file_name for file_name in MODEL_FILES_BY_MODE[mode]] + [
+        root / "scaler.npz"
+    ]
     for path in paths:
         if not path.exists():
             raise FileNotFoundError(f"LSTM-AE 구성 파일이 없습니다: {path.name}")
     signature = tuple(path.stat().st_mtime_ns for path in paths)
-    return _load_assets(str(root), signature)
+    return _load_assets(str(root), mode, signature)
 
 
 def _reconstruction_errors(
@@ -214,6 +246,7 @@ def predict(df: pd.DataFrame, context: dict[str, Any]) -> dict[str, Any]:
     """Return operational-stride row predictions and report-compatible pack output."""
     threshold = float(context["spec"].get("threshold", 0.5))
     root = Path(context["spec"]["root"])
+    mode = _resolve_mode(context)
     relative, cv_columns, temp_columns = _relative_features(df)
 
     if len(df) < WINDOW:
@@ -226,11 +259,12 @@ def predict(df: pd.DataFrame, context: dict[str, Any]) -> dict[str, Any]:
                 "insufficient_rows": True,
                 "required_rows": WINDOW,
                 "available_rows": len(df),
-                "decision_rule": "five-model raw reconstruction-error argmin",
+                "mode": mode,
+                "decision_rule": "mode-aware six-model raw reconstruction-error argmin",
             },
         }
 
-    models, mean, std = _assets(root)
+    models, mean, std = _assets(root, mode)
     scaled = ((relative - mean) / std).astype(np.float32, copy=False)
     errors, endpoints = _reconstruction_errors(models, scaled)
     probabilities = _similarity_probabilities(errors)
@@ -257,7 +291,9 @@ def predict(df: pd.DataFrame, context: dict[str, Any]) -> dict[str, Any]:
         "window_size": WINDOW,
         "warmup_rows": WINDOW - 1,
         "valid_window_count": int(len(endpoints)),
-        "decision_rule": "정상 AE 오차 최대 윈도우에서 5개 AE raw argmin",
+        "mode": mode,
+        "model_files": list(MODEL_FILES_BY_MODE[mode]),
+        "decision_rule": "정상 AE 오차 최대 윈도우에서 모드별 6개 AE raw argmin",
         "pack_class": CATEGORIES[pack_class_index],
         "pack_window_end_row": pack_endpoint + 1,
         "pack_normal_reconstruction_error": float(errors[peak_position, 0]),
@@ -265,7 +301,7 @@ def predict(df: pd.DataFrame, context: dict[str, Any]) -> dict[str, Any]:
         "summary_override": {
             "status": "NG_REVIEW" if pack_is_anomaly else "NORMAL",
             "file_prediction": int(pack_is_anomaly),
-            "trigger": "LSTM-AE raw argmin 파일 판정",
+            "trigger": f"LSTM-AE {mode} 6개 모델 raw argmin 파일 판정",
         },
     }
 
