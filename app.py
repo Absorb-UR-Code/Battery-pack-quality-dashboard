@@ -47,6 +47,7 @@ from core.storage import (
     append_review,
     dataframe_csv_bytes,
     delete_fault_events,
+    load_fault_actions,
     load_reviews,
     safe_file_name,
     save_batch_result,
@@ -2578,6 +2579,44 @@ with tab_fault:
             with disposition_col:
                 st.error(f"처분 기준: {selected_fault['disposition_guide']}")
                 st.caption("폐기 여부는 모델이 자동 확정하지 않으며 현장 재계측과 안전 담당자 승인 후 결정합니다.")
+
+            st.markdown("#### 저장된 조치 기록")
+            fault_actions = load_fault_actions()
+            if not fault_actions.empty and "event_id" in fault_actions.columns:
+                event_action_history = fault_actions[
+                    fault_actions["event_id"].fillna("").astype(str).eq(event_id)
+                ].copy()
+            else:
+                event_action_history = pd.DataFrame()
+
+            action_history_columns = {
+                "assignee": "담당자",
+                "action_status": "처리 상태",
+                "final_action": "최종 조치",
+                "action_notes": "조치 메모",
+            }
+            if event_action_history.empty:
+                st.info("저장된 조치 기록이 없습니다.")
+            else:
+                if "updated_at" in event_action_history.columns:
+                    event_action_history = event_action_history.sort_values(
+                        "updated_at",
+                        ascending=False,
+                    )
+                for column in action_history_columns:
+                    if column not in event_action_history.columns:
+                        event_action_history[column] = ""
+                action_history_display = (
+                    event_action_history[list(action_history_columns)]
+                    .fillna("")
+                    .rename(columns=action_history_columns)
+                    .reset_index(drop=True)
+                )
+                st.dataframe(
+                    action_history_display,
+                    width="stretch",
+                    hide_index=True,
+                )
 
             action_status_options = ["신규", "검토 중", "조치 대기", "완료"]
             final_action_options = [
