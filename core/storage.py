@@ -80,6 +80,25 @@ def append_review(record: dict[str, Any]) -> Path:
     return path
 
 
+def delete_reviews(row_indices: list[int] | tuple[int, ...] | set[int]) -> dict[str, Any]:
+    reviews = load_reviews()
+    requested = {
+        int(index)
+        for index in row_indices
+        if isinstance(index, int) or str(index).strip().lstrip("-").isdigit()
+    }
+    valid = sorted(index for index in requested if 0 <= index < len(reviews))
+    path = review_log_path()
+    if valid:
+        updated = reviews.drop(index=valid).reset_index(drop=True)
+        _atomic_write_csv(updated, path)
+    return {
+        "requested": len(requested),
+        "deleted": len(valid),
+        "path": path,
+    }
+
+
 def fault_event_log_path() -> Path:
     return FAULT_DIR / "model_fault_event_log.csv"
 
@@ -188,6 +207,90 @@ def append_fault_action(record: dict[str, Any]) -> Path:
                 events.loc[event_mask, column] = "" if value is None else str(value)
             save_fault_event_log(events)
     return path
+
+
+def delete_fault_actions(
+    row_indices: list[int] | tuple[int, ...] | set[int],
+) -> dict[str, Any]:
+    actions = load_fault_actions()
+    requested = {
+        int(index)
+        for index in row_indices
+        if isinstance(index, int) or str(index).strip().lstrip("-").isdigit()
+    }
+    valid = sorted(index for index in requested if 0 <= index < len(actions))
+    path = fault_action_log_path()
+    if not valid:
+        return {
+            "requested": len(requested),
+            "deleted": 0,
+            "path": path,
+        }
+
+    if "event_id" in actions.columns:
+        affected_event_ids = {
+            str(event_id).strip()
+            for event_id in actions.loc[valid, "event_id"].fillna("").astype(str)
+            if str(event_id).strip()
+        }
+    else:
+        affected_event_ids = set()
+
+    updated_actions = actions.drop(index=valid).reset_index(drop=True)
+    _atomic_write_csv(updated_actions, path)
+
+    events = load_fault_event_log()
+    if affected_event_ids and not events.empty and "event_id" in events.columns:
+        event_columns = {
+            "action_status": "신규",
+            "final_action": "미결정",
+            "assignee": "",
+            "action_notes": "",
+            "action_updated_at": "",
+        }
+        for column in event_columns:
+            if column not in events.columns:
+                events[column] = pd.Series("", index=events.index, dtype="string")
+            else:
+                events[column] = events[column].astype("string").fillna("")
+
+        for event_id in affected_event_ids:
+            event_mask = events["event_id"].fillna("").astype(str).eq(event_id)
+            if not event_mask.any():
+                continue
+            if "event_id" in updated_actions.columns:
+                remaining = updated_actions[
+                    updated_actions["event_id"].fillna("").astype(str).eq(event_id)
+                ].copy()
+            else:
+                remaining = pd.DataFrame()
+
+            if remaining.empty:
+                values = event_columns
+            else:
+                if "updated_at" in remaining.columns:
+                    remaining = remaining.sort_values(
+                        "updated_at",
+                        kind="stable",
+                    )
+                latest = remaining.iloc[-1]
+                values = {
+                    "action_status": latest.get("action_status", "신규"),
+                    "final_action": latest.get("final_action", "미결정"),
+                    "assignee": latest.get("assignee", ""),
+                    "action_notes": latest.get("action_notes", ""),
+                    "action_updated_at": latest.get("updated_at", ""),
+                }
+
+            for column, value in values.items():
+                events.loc[event_mask, column] = "" if pd.isna(value) else str(value)
+        save_fault_event_log(events)
+
+    return {
+        "requested": len(requested),
+        "deleted": len(valid),
+        "path": path,
+    }
 
 
 def load_deleted_fault_event_ids() -> set[str]:

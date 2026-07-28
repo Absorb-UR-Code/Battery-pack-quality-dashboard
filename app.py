@@ -46,7 +46,9 @@ from core.storage import (
     append_fault_action,
     append_review,
     dataframe_csv_bytes,
+    delete_fault_actions,
     delete_fault_events,
+    delete_reviews,
     load_fault_actions,
     load_reviews,
     safe_file_name,
@@ -2199,6 +2201,9 @@ with tab_data_status:
 
 with tab_review:
     st.markdown('<div class="section-label">현장 검토·재라벨링</div>', unsafe_allow_html=True)
+    deleted_review_message = st.session_state.pop("deleted_review_message", "")
+    if deleted_review_message:
+        st.success(deleted_review_message)
     active_result = st.session_state.get("active_analysis")
     if selected_record is None:
         st.info("검토할 파일을 먼저 선택하세요.")
@@ -2272,14 +2277,64 @@ with tab_review:
         else:
             disagreement_count = 0
         v3.metric("모델·현장 불일치", f"{disagreement_count:,}건")
-        review_display = translated_reviews(reviews.iloc[::-1])
-        st.dataframe(review_display, width="stretch", hide_index=True)
-        st.download_button(
-            "검토 이력 CSV",
-            dataframe_csv_bytes(review_display),
-            "operator_review_log.csv",
-            "text/csv",
+        review_table_revision = int(st.session_state.get("review_table_revision", 0))
+        review_storage_indices = reviews.index[::-1].tolist()
+        review_display = translated_reviews(reviews.loc[review_storage_indices])
+        review_selection = st.dataframe(
+            review_display,
+            width="stretch",
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row",
+            key=f"review_history_table_{review_table_revision}",
         )
+        review_selected_rows_raw = list(
+            getattr(getattr(review_selection, "selection", None), "rows", [])
+        )
+        review_selected_rows = []
+        for row_index in review_selected_rows_raw:
+            try:
+                parsed_index = int(row_index)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= parsed_index < len(review_storage_indices):
+                review_selected_rows.append(parsed_index)
+        selected_review_indices = [
+            int(review_storage_indices[row_index])
+            for row_index in review_selected_rows
+        ]
+
+        review_download_col, review_confirm_col, review_delete_col = st.columns([1.2, 1.2, 1.5])
+        with review_download_col:
+            st.download_button(
+                "검토 이력 CSV",
+                dataframe_csv_bytes(review_display),
+                "operator_review_log.csv",
+                "text/csv",
+                width="stretch",
+            )
+        with review_confirm_col:
+            confirm_review_delete = st.checkbox(
+                "삭제 확인",
+                value=False,
+                disabled=not selected_review_indices,
+                key=f"confirm_review_delete_{review_table_revision}",
+            )
+        with review_delete_col:
+            delete_review_requested = st.button(
+                f"선택 검토 기록 삭제 ({len(selected_review_indices)}건)",
+                disabled=not selected_review_indices or not confirm_review_delete,
+                key=f"delete_selected_reviews_{review_table_revision}",
+                width="stretch",
+            )
+
+        if delete_review_requested:
+            delete_result = delete_reviews(selected_review_indices)
+            st.session_state["deleted_review_message"] = (
+                f"선택한 검토 기록 {delete_result['deleted']}건을 삭제했습니다."
+            )
+            st.session_state["review_table_revision"] = review_table_revision + 1
+            st.rerun()
 
 
 with tab_fault:
@@ -2581,6 +2636,10 @@ with tab_fault:
                 st.caption("폐기 여부는 모델이 자동 확정하지 않으며 현장 재계측과 안전 담당자 승인 후 결정합니다.")
 
             st.markdown("#### 저장된 조치 기록")
+            action_message_key = f"deleted_fault_action_message_{event_id}"
+            deleted_action_message = st.session_state.pop(action_message_key, "")
+            if deleted_action_message:
+                st.success(deleted_action_message)
             fault_actions = load_fault_actions()
             if not fault_actions.empty and "event_id" in fault_actions.columns:
                 event_action_history = fault_actions[
@@ -2598,11 +2657,15 @@ with tab_fault:
             if event_action_history.empty:
                 st.info("저장된 조치 기록이 없습니다.")
             else:
+                action_table_revision = int(
+                    st.session_state.get("fault_action_table_revision", 0)
+                )
                 if "updated_at" in event_action_history.columns:
                     event_action_history = event_action_history.sort_values(
                         "updated_at",
                         ascending=False,
                     )
+                action_storage_indices = event_action_history.index.tolist()
                 for column in action_history_columns:
                     if column not in event_action_history.columns:
                         event_action_history[column] = ""
@@ -2612,11 +2675,55 @@ with tab_fault:
                     .rename(columns=action_history_columns)
                     .reset_index(drop=True)
                 )
-                st.dataframe(
+                action_history_selection = st.dataframe(
                     action_history_display,
                     width="stretch",
                     hide_index=True,
+                    on_select="rerun",
+                    selection_mode="multi-row",
+                    key=f"fault_action_history_{event_id}_{action_table_revision}",
                 )
+                action_selected_rows_raw = list(
+                    getattr(getattr(action_history_selection, "selection", None), "rows", [])
+                )
+                action_selected_rows = []
+                for row_index in action_selected_rows_raw:
+                    try:
+                        parsed_index = int(row_index)
+                    except (TypeError, ValueError):
+                        continue
+                    if 0 <= parsed_index < len(action_storage_indices):
+                        action_selected_rows.append(parsed_index)
+                selected_action_indices = [
+                    int(action_storage_indices[row_index])
+                    for row_index in action_selected_rows
+                ]
+
+                action_confirm_col, action_delete_col = st.columns([1.2, 1.5])
+                with action_confirm_col:
+                    confirm_action_delete = st.checkbox(
+                        "조치 기록 삭제 확인",
+                        value=False,
+                        disabled=not selected_action_indices,
+                        key=f"confirm_action_delete_{event_id}_{action_table_revision}",
+                    )
+                with action_delete_col:
+                    delete_action_requested = st.button(
+                        f"선택 조치 기록 삭제 ({len(selected_action_indices)}건)",
+                        disabled=not selected_action_indices or not confirm_action_delete,
+                        key=f"delete_selected_actions_{event_id}_{action_table_revision}",
+                        width="stretch",
+                    )
+
+                if delete_action_requested:
+                    delete_result = delete_fault_actions(selected_action_indices)
+                    st.session_state[action_message_key] = (
+                        f"선택한 조치 기록 {delete_result['deleted']}건을 삭제했습니다."
+                    )
+                    st.session_state["fault_action_table_revision"] = (
+                        action_table_revision + 1
+                    )
+                    st.rerun()
 
             action_status_options = ["신규", "검토 중", "조치 대기", "완료"]
             final_action_options = [
