@@ -2574,7 +2574,6 @@ with tab_fault:
             action_col, disposition_col = st.columns(2)
             with action_col:
                 st.warning(f"1차 조치: {selected_fault['recommended_action']}")
-                st.write(str(selected_fault["recommendation_reason"]))
                 st.caption(f"PFMEA 연계 유형: {selected_fault['pfmea_ng_codes']}")
             with disposition_col:
                 st.error(f"처분 기준: {selected_fault['disposition_guide']}")

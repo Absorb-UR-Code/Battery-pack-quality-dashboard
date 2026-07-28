@@ -180,8 +180,12 @@ def append_fault_action(record: dict[str, Any]) -> Path:
             }
             for column, value in event_updates.items():
                 if column not in events.columns:
-                    events[column] = ""
-                events.loc[event_mask, column] = value
+                    events[column] = pd.Series("", index=events.index, dtype="string")
+                else:
+                    # Empty CSV text columns are inferred as float64 by
+                    # read_csv. Convert them before assigning operator text.
+                    events[column] = events[column].astype("string").fillna("")
+                events.loc[event_mask, column] = "" if value is None else str(value)
             save_fault_event_log(events)
     return path
 
