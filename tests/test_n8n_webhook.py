@@ -79,6 +79,7 @@ class N8nWebhookTests(unittest.TestCase):
                     "event_id": "fault-002",
                     "source_file": "1017_chg.csv",
                     "serial_number": "798",
+                    "mode": "충전",
                     "fault_type": "용접·접촉 불량",
                     "fault_confidence": 0.873,
                     "fault_confidence_percent": "87.3%",
@@ -87,6 +88,10 @@ class N8nWebhookTests(unittest.TestCase):
                     "rpn": 168,
                     "suspect_sensors": "M07CV02, M07CV08",
                     "recommended_action": "접촉부 재검사 및 격리",
+                    "model_name": "배터리팩 LSTM 모델",
+                    "model_version": "1.0.0",
+                    "action_status": "현장 검토 중",
+                    "owner": "김준영",
                 },
                 sent_at="2026-07-28T12:00:00",
                 boundary="TestBoundary",
@@ -107,6 +112,11 @@ class N8nWebhookTests(unittest.TestCase):
         self.assertEqual(metadata["rpn"], 168)
         self.assertEqual(metadata["suspect_sensors"], "M07CV02, M07CV08")
         self.assertEqual(metadata["recommended_action"], "접촉부 재검사 및 격리")
+        self.assertEqual(metadata["mode"], "충전")
+        self.assertEqual(metadata["model_name"], "배터리팩 LSTM 모델")
+        self.assertEqual(metadata["model_version"], "1.0.0")
+        self.assertEqual(metadata["action_status"], "현장 검토 중")
+        self.assertEqual(metadata["owner"], "김준영")
         self.assertIn(
             b'name="fault_source_csv"; filename="Test09_NG_dchg.csv"',
             body,

@@ -218,6 +218,7 @@ def build_fault_source_metadata(
         "trigger_serial_number": str(
             trigger_record.get("serial_number", "")
         ).strip(),
+        "mode": str(trigger_record.get("mode", "")).strip(),
         "csv_filename": path.name,
         "csv_row_count": _csv_row_count(csv_payload),
         "csv_size_bytes": len(csv_payload),
@@ -236,6 +237,12 @@ def build_fault_source_metadata(
         "recommended_action": str(
             trigger_record.get("recommended_action", "")
         ).strip(),
+        "model_name": str(trigger_record.get("model_name", "")).strip(),
+        "model_version": str(trigger_record.get("model_version", "")).strip(),
+        "action_status": str(
+            trigger_record.get("action_status", "현장 검토 중")
+        ).strip(),
+        "owner": str(trigger_record.get("owner", "")).strip(),
     }
 
 
