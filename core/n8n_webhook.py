@@ -161,6 +161,35 @@ def _validate_settings(settings: N8nWebhookSettings) -> str:
     return ""
 
 
+def _validate_acknowledgement(preview: str, event_id: str) -> str:
+    """Require an explicit JSON acknowledgement from the storage workflow."""
+    text = str(preview).strip()
+    if not text:
+        return "n8n returned HTTP 2xx without a JSON acknowledgement"
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return "n8n response is not valid JSON"
+    if not isinstance(payload, Mapping):
+        return "n8n acknowledgement must be a JSON object"
+
+    acknowledged = any(
+        payload.get(key) is True
+        for key in ("ok", "received", "archived")
+    )
+    if not acknowledged:
+        return "n8n JSON acknowledgement does not confirm receipt"
+
+    response_event_id = str(
+        payload.get("event_id")
+        or payload.get("trigger_event_id")
+        or ""
+    ).strip()
+    if response_event_id and event_id and response_event_id != event_id:
+        return "n8n acknowledgement event_id does not match the sent event"
+    return ""
+
+
 def _csv_row_count(payload: bytes) -> int:
     text = payload.decode("utf-8-sig", errors="replace")
     rows = csv.reader(io.StringIO(text))
@@ -352,15 +381,32 @@ def send_fault_source_csv_to_n8n(
                 "utf-8",
                 errors="replace",
             )
-        sent = 200 <= status_code < 300
+        transport_ok = 200 <= status_code < 300
+        acknowledgement_error = (
+            _validate_acknowledgement(
+                preview,
+                str(metadata["trigger_event_id"]),
+            )
+            if transport_ok
+            else ""
+        )
+        sent = transport_ok and not acknowledgement_error
         if not sent:
-            LOGGER.warning("n8n fault source CSV delivery returned HTTP %s", status_code)
+            LOGGER.warning(
+                "n8n fault source CSV delivery was not acknowledged: HTTP %s, %s",
+                status_code,
+                acknowledgement_error or "unexpected response",
+            )
         return N8nDeliveryResult(
             enabled=True,
             attempted=True,
             sent=sent,
             status_code=status_code,
-            error="" if sent else f"HTTP {status_code}",
+            error=(
+                ""
+                if sent
+                else acknowledgement_error or f"HTTP {status_code}"
+            ),
             response_preview=preview,
             delivered_at=delivered_at,
         )

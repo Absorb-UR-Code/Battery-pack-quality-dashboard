@@ -1,0 +1,480 @@
+{
+  "name": "배터리팩 불량로그 수신 및 원본 CSV 보관",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "battery-pack-fault",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "f0402729-2947-4e2c-b953-af531424cd9b",
+      "name": "불량로그 Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -760,
+        0
+      ],
+      "webhookId": "battery-pack-fault-weekly-report"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first();\nconst body = item.json?.body ?? item.json ?? {};\nlet metadata = body.metadata ?? item.json?.metadata ?? {};\n\nif (typeof metadata === 'string') {\n  try {\n    metadata = JSON.parse(metadata);\n  } catch (error) {\n    throw new Error('metadata JSON 파싱 실패: ' + error.message);\n  }\n}\n\nif (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {\n  metadata = {};\n}\n\nconst binaryEntries = Object.entries(item.binary ?? {});\nconst binaryFile = item.binary?.fault_source_csv ?? binaryEntries[0]?.[1];\nif (!binaryFile) {\n  throw new Error('multipart/form-data에서 CSV 파일을 찾지 못했습니다. 필드명 fault_source_csv를 확인하세요.');\n}\n\nconst toFiniteNumber = (value, fallback = 0) => {\n  const normalized = String(value ?? '')\n    .replace(/[% ,]/g, '')\n    .trim();\n  const parsed = Number(normalized);\n  return Number.isFinite(parsed) ? parsed : fallback;\n};\n\nconst sourceFile = String(\n  metadata.trigger_source_file\n  ?? metadata.csv_filename\n  ?? binaryFile.fileName\n  ?? 'fault_source.csv'\n).trim();\n\nconst eventId = String(\n  metadata.trigger_event_id\n  ?? body.event_id\n  ?? item.json?.event_id\n  ?? metadata.csv_sha256\n  ?? (Date.now() + '_' + sourceFile)\n).trim();\nif (!eventId) {\n  throw new Error('event_id를 생성하지 못했습니다.');\n}\n\nconst receivedAt = String(metadata.webhook_sent_at ?? new Date().toISOString());\nconst mode = /dchg|방전/i.test(sourceFile)\n  ? '방전'\n  : /(^|[_-])chg|충전/i.test(sourceFile)\n    ? '충전'\n    : '미상';\n\nconst suspectSensors = Array.isArray(metadata.suspect_sensors)\n  ? metadata.suspect_sensors.join(', ')\n  : String(metadata.suspect_sensors ?? '');\nconst faultConfidence = toFiniteNumber(metadata.fault_confidence, 0);\nconst faultConfidencePercent = toFiniteNumber(\n  metadata.fault_confidence_percent,\n  faultConfidence * 100\n);\nconst safeName = (receivedAt.slice(0, 10) + '_' + eventId + '_' + sourceFile)\n  .replace(/[\\\\/:*?\"<>|]/g, '_');\n\nreturn [{\n  json: {\n    event_id: eventId,\n    received_at: receivedAt,\n    source_file: sourceFile,\n    serial_number: String(metadata.trigger_serial_number ?? ''),\n    mode,\n    fault_type: String(metadata.fault_type ?? '미분류 불량'),\n    fault_confidence: faultConfidence,\n    fault_confidence_percent: faultConfidencePercent,\n    risk_level: toFiniteNumber(metadata.risk_level, 0),\n    risk_label: String(metadata.risk_label ?? ''),\n    rpn: toFiniteNumber(metadata.rpn, 0),\n    suspect_sensors: suspectSensors,\n    recommended_action: String(metadata.recommended_action ?? ''),\n    csv_filename: sourceFile,\n    archive_filename: safeName,\n    csv_row_count: toFiniteNumber(metadata.csv_row_count ?? body.row_count, 0),\n    csv_size_bytes: toFiniteNumber(metadata.csv_size_bytes, 0),\n    csv_sha256: String(metadata.csv_sha256 ?? ''),\n    model_name: String(metadata.model_name ?? '배터리팩 LSTM 모델'),\n    model_version: String(metadata.model_version ?? ''),\n    action_status: String(metadata.action_status ?? '현장 검토 중'),\n    owner: String(metadata.owner ?? ''),\n    report_status: 'PENDING',\n    report_week: '',\n    raw_metadata_json: JSON.stringify(metadata),\n  },\n  binary: {\n    fault_source_csv: binaryFile,\n  },\n}];"
+      },
+      "id": "1fdfe2f1-1b4b-4020-a3a9-aa11be391ea1",
+      "name": "Webhook 파싱 및 검증",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "inputDataFieldName": "fault_source_csv",
+        "name": "={{ $json.archive_filename }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_GOOGLE_DRIVE_FOLDER_ID",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "2ace44b1-1035-47b9-93d4-c292601a3f41",
+      "name": "원본 CSV Google Drive 보관",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const source = $('Webhook 파싱 및 검증').first().json;\nconst uploaded = $input.first().json ?? {};\nconst driveFileId = String(uploaded.id ?? uploaded.fileId ?? '');\n\nreturn [{\n  json: {\n    ...source,\n    drive_file_id: driveFileId,\n    drive_url: String(\n      uploaded.webViewLink\n      ?? uploaded.webContentLink\n      ?? (driveFileId ? 'https://drive.google.com/open?id=' + driveFileId : '')\n    ),\n  },\n}];"
+      },
+      "id": "a481cba5-f05c-420d-b54f-43c3fc97ef2e",
+      "name": "Drive 정보와 메타데이터 결합",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_BATTERY_FAULT_EVENTS_TABLE_ID",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_id": "={{ $json.event_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "source_file": "={{ $json.source_file }}",
+            "serial_number": "={{ $json.serial_number }}",
+            "mode": "={{ $json.mode }}",
+            "fault_type": "={{ $json.fault_type }}",
+            "fault_confidence": "={{ $json.fault_confidence }}",
+            "fault_confidence_percent": "={{ $json.fault_confidence_percent }}",
+            "risk_level": "={{ $json.risk_level }}",
+            "risk_label": "={{ $json.risk_label }}",
+            "rpn": "={{ $json.rpn }}",
+            "suspect_sensors": "={{ $json.suspect_sensors }}",
+            "recommended_action": "={{ $json.recommended_action }}",
+            "csv_filename": "={{ $json.csv_filename }}",
+            "csv_row_count": "={{ $json.csv_row_count }}",
+            "csv_size_bytes": "={{ $json.csv_size_bytes }}",
+            "csv_sha256": "={{ $json.csv_sha256 }}",
+            "model_name": "={{ $json.model_name }}",
+            "model_version": "={{ $json.model_version }}",
+            "action_status": "={{ $json.action_status }}",
+            "owner": "={{ $json.owner }}",
+            "drive_file_id": "={{ $json.drive_file_id }}",
+            "drive_url": "={{ $json.drive_url }}",
+            "report_status": "={{ $json.report_status }}",
+            "report_week": "={{ $json.report_week }}",
+            "raw_metadata_json": "={{ $json.raw_metadata_json }}"
+          },
+          "matchingColumns": [
+            "event_id"
+          ],
+          "schema": [
+            {
+              "id": "event_id",
+              "displayName": "event_id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "date",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "source_file",
+              "displayName": "source_file",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "serial_number",
+              "displayName": "serial_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "mode",
+              "displayName": "mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "fault_type",
+              "displayName": "fault_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "fault_confidence",
+              "displayName": "fault_confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "fault_confidence_percent",
+              "displayName": "fault_confidence_percent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "risk_level",
+              "displayName": "risk_level",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "risk_label",
+              "displayName": "risk_label",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rpn",
+              "displayName": "rpn",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "suspect_sensors",
+              "displayName": "suspect_sensors",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "recommended_action",
+              "displayName": "recommended_action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "csv_filename",
+              "displayName": "csv_filename",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "csv_row_count",
+              "displayName": "csv_row_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "csv_size_bytes",
+              "displayName": "csv_size_bytes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "csv_sha256",
+              "displayName": "csv_sha256",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "model_name",
+              "displayName": "model_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "model_version",
+              "displayName": "model_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "action_status",
+              "displayName": "action_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "owner",
+              "displayName": "owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "drive_file_id",
+              "displayName": "drive_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "drive_url",
+              "displayName": "drive_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "report_status",
+              "displayName": "report_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "report_week",
+              "displayName": "report_week",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "raw_metadata_json",
+              "displayName": "raw_metadata_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": true,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "1d7851ee-c168-4fe3-99a1-bb75b572c697",
+      "name": "불량 이벤트 Data Table Upsert",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"ok\": true, \"event_id\": $(\"Webhook 파싱 및 검증\").first().json.event_id, \"archived\": true, \"stored_at\": $now} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a7528bb1-6010-47c7-a2c4-253ed1667960",
+      "name": "수신 완료 응답",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        440,
+        0
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "불량로그 Webhook": {
+      "main": [
+        [
+          {
+            "node": "Webhook 파싱 및 검증",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook 파싱 및 검증": {
+      "main": [
+        [
+          {
+            "node": "원본 CSV Google Drive 보관",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "원본 CSV Google Drive 보관": {
+      "main": [
+        [
+          {
+            "node": "Drive 정보와 메타데이터 결합",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive 정보와 메타데이터 결합": {
+      "main": [
+        [
+          {
+            "node": "불량 이벤트 Data Table Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "불량 이벤트 Data Table Upsert": {
+      "main": [
+        [
+          {
+            "node": "수신 완료 응답",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul"
+  },
+  "versionId": "a8c69372-0181-4e03-b0aa-e9e09d319b73",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

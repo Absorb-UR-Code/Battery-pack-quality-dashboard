@@ -46,6 +46,18 @@ class _CaptureHandler(BaseHTTPRequestHandler):
         return
 
 
+class _EmptyAcknowledgementHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 class N8nWebhookTests(unittest.TestCase):
     @staticmethod
     def _write_fault_log(path: Path, rows: list[dict[str, object]]) -> None:
@@ -146,6 +158,43 @@ class N8nWebhookTests(unittest.TestCase):
         )
         self.assertIn(b"fault-003", captured["body"])
         self.assertIn(b"Test09_NG_dchg.csv", captured["body"])
+
+    def test_empty_http_200_is_not_treated_as_archived(self) -> None:
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            _EmptyAcknowledgementHandler,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                csv_path = Path(temp_dir) / "Test08_NG_chg.csv"
+                self._write_fault_log(
+                    csv_path,
+                    [{"event_id": "fault-ng8", "serial_number": "798"}],
+                )
+                result = send_fault_source_csv_to_n8n(
+                    csv_path,
+                    {"event_id": "fault-ng8", "serial_number": "798"},
+                    settings=N8nWebhookSettings(
+                        enabled=True,
+                        webhook_url=(
+                            f"http://127.0.0.1:{server.server_port}/battery-fault"
+                        ),
+                        auth_header_name="X-Battery-Token",
+                        auth_token="test-token",
+                        timeout_seconds=2,
+                    ),
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertTrue(result.attempted)
+        self.assertFalse(result.sent)
+        self.assertEqual(result.status_code, 200)
+        self.assertIn("without a JSON acknowledgement", result.error)
 
     def test_invalid_url_fails_without_raising(self) -> None:
         result = send_fault_source_csv_to_n8n(
