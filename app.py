@@ -25,11 +25,12 @@ from core.data_catalog import (
 )
 from core.diagnostic_display import (
     build_normal_reference,
-    evaluated_row_positions,
     fault_domain_coverage,
     kpi_log_styler,
     latest_fault_payload,
     latest_scored_prediction,
+    replay_progress_high_water,
+    replayed_row_positions,
     sensor_matrix_styler,
 )
 from core.features import build_sensor_kpis, module_temperature_summary, sensor_deviation_ranking, sensor_snapshot_matrix
@@ -588,6 +589,44 @@ def advance_shared_live_playback(
     if target >= int(total_rows):
         st.session_state["ops_live_running"] = False
     return target
+
+
+def live_replay_history_key(record: pd.Series) -> str:
+    """Build a stable per-file key for cumulative live playback history."""
+    source_path = str(Path(str(record["path"])).resolve()).casefold()
+    return f"{source_path}::{record.get('modified_at', '')}"
+
+
+def record_live_replay_progress(
+    history_key: str,
+    position: int,
+    total_rows: int,
+) -> int:
+    """Remember the highest source row that has reached live playback."""
+    history = st.session_state.get("ops_live_replayed_rows_by_file", {})
+    if not isinstance(history, dict):
+        history = {}
+    previous_count = history.get(history_key, 0)
+    replayed_count = replay_progress_high_water(
+        previous_count,
+        position,
+        total_rows,
+    )
+    history[history_key] = replayed_count
+    st.session_state["ops_live_replayed_rows_by_file"] = history
+    return replayed_count
+
+
+def live_replayed_row_count(history_key: str, total_rows: int) -> int:
+    """Read the cumulative replayed row count for one source file."""
+    history = st.session_state.get("ops_live_replayed_rows_by_file", {})
+    if not isinstance(history, dict):
+        return 0
+    return replay_progress_high_water(
+        0,
+        history.get(history_key, 0),
+        total_rows,
+    )
 
 
 def begin_live_fault_run() -> str:
@@ -1157,11 +1196,13 @@ if selected_record is not None:
     ops_live_signature = (
         f"{selected_record['path']}::{selected_record['modified_at']}::{ops_model_signature}"
     )
+    ops_replay_history_key = live_replay_history_key(selected_record)
     if st.session_state.get("ops_live_signature") != ops_live_signature:
         st.session_state["ops_live_signature"] = ops_live_signature
         st.session_state["ops_live_position"] = 1
         st.session_state["ops_live_running"] = False
         st.session_state["ops_live_next_tick"] = 0.0
+        st.session_state["ops_live_has_started"] = False
         begin_live_fault_run()
     elif not st.session_state.get("ops_live_run_id"):
         begin_live_fault_run()
@@ -1213,6 +1254,12 @@ if selected_record is not None:
             refresh_seconds=float(live_refresh_seconds),
             step_size=int(live_step_size),
         )
+        if st.session_state.get("ops_live_has_started", False):
+            record_live_replay_progress(
+                ops_replay_history_key,
+                current_position,
+                ops_total_rows,
+            )
         persist_completed_live_fault_event(
             model_result,
             record=selected_record,
@@ -1274,6 +1321,7 @@ with tab_live:
                 st.session_state["ops_live_position"] = 1
                 st.session_state["ops_live_running"] = False
                 st.session_state["ops_live_next_tick"] = 0.0
+                st.session_state["ops_live_has_started"] = False
                 begin_live_fault_run()
             elif stop_clicked:
                 st.session_state["ops_live_running"] = False
@@ -1285,10 +1333,22 @@ with tab_live:
                     total_rows,
                     int(st.session_state.get("ops_live_position", 1)) + int(live_step_size),
                 )
+                st.session_state["ops_live_has_started"] = True
+                record_live_replay_progress(
+                    ops_replay_history_key,
+                    int(st.session_state["ops_live_position"]),
+                    total_rows,
+                )
             elif start_clicked:
                 if int(st.session_state.get("ops_live_position", 1)) >= total_rows:
                     st.session_state["ops_live_position"] = 1
                     begin_live_fault_run()
+                st.session_state["ops_live_has_started"] = True
+                record_live_replay_progress(
+                    ops_replay_history_key,
+                    int(st.session_state["ops_live_position"]),
+                    total_rows,
+                )
                 st.session_state["ops_live_running"] = True
                 st.session_state["ops_live_next_tick"] = time.monotonic() + float(live_refresh_seconds)
                 # Rebuild the global heartbeat once with run_every enabled.
@@ -1584,6 +1644,7 @@ with tab_live_visual:
                 st.session_state["ops_live_position"] = 1
                 st.session_state["ops_live_running"] = False
                 st.session_state["ops_live_next_tick"] = 0.0
+                st.session_state["ops_live_has_started"] = False
                 begin_live_fault_run()
             elif schematic_stop:
                 st.session_state["ops_live_running"] = False
@@ -1596,10 +1657,22 @@ with tab_live_visual:
                     int(st.session_state.get("ops_live_position", 1))
                     + int(live_step_size),
                 )
+                st.session_state["ops_live_has_started"] = True
+                record_live_replay_progress(
+                    ops_replay_history_key,
+                    int(st.session_state["ops_live_position"]),
+                    schematic_total_rows,
+                )
             elif schematic_start:
                 if int(st.session_state.get("ops_live_position", 1)) >= schematic_total_rows:
                     st.session_state["ops_live_position"] = 1
                     begin_live_fault_run()
+                st.session_state["ops_live_has_started"] = True
+                record_live_replay_progress(
+                    ops_replay_history_key,
+                    int(st.session_state["ops_live_position"]),
+                    schematic_total_rows,
+                )
                 st.session_state["ops_live_running"] = True
                 st.session_state["ops_live_next_tick"] = time.monotonic() + float(live_refresh_seconds)
                 # Rebuild the global heartbeat once with run_every enabled.
@@ -1771,21 +1844,20 @@ with tab_daily:
                     st.session_state["live_model_analysis"] = cached_daily_model
                 daily_model_result = cached_daily_model["result"]
             daily_fault_domains = fault_domain_coverage(daily_model_result, len(log_df))
-            evaluated_positions = evaluated_row_positions(
-                daily_model_result.get("row_result")
-                if isinstance(daily_model_result, dict)
-                else None,
+            replayed_count = live_replayed_row_count(
+                ops_replay_history_key,
                 len(log_df),
             )
+            replayed_positions = replayed_row_positions(len(log_df), replayed_count)
 
             _, _, log_timestamp = resolve_time_axis(log_df)
             if (
                 log_timestamp is not None
                 and log_timestamp.notna().any()
-                and evaluated_positions.size
+                and replayed_positions.size
             ):
-                evaluated_timestamps = log_timestamp.iloc[evaluated_positions]
-                available_dates = sorted(evaluated_timestamps.dropna().dt.date.unique())
+                replayed_timestamps = log_timestamp.iloc[replayed_positions]
+                available_dates = sorted(replayed_timestamps.dropna().dt.date.unique())
             else:
                 available_dates = []
 
@@ -1798,12 +1870,12 @@ with tab_daily:
                         index=len(available_dates) - 1,
                         key=f"daily_date_{selected_record['file_name']}",
                     )
-                date_matches = log_timestamp.iloc[evaluated_positions].dt.date.eq(selected_date)
-                date_source_positions = evaluated_positions[date_matches.to_numpy()]
+                date_matches = log_timestamp.iloc[replayed_positions].dt.date.eq(selected_date)
+                date_source_positions = replayed_positions[date_matches.to_numpy()]
                 date_text = str(selected_date)
             else:
-                date_source_positions = evaluated_positions
-                date_text = "판정 행 없음" if not len(date_source_positions) else "시간 정보 없음"
+                date_source_positions = replayed_positions
+                date_text = "재생 행 없음" if not len(date_source_positions) else "시간 정보 없음"
                 with daily_date_col:
                     st.selectbox(
                         "조회 날짜",
@@ -1828,7 +1900,7 @@ with tab_daily:
                 else:
                     st.selectbox(
                         "Serial Num",
-                        options=["판정 행 없음"],
+                        options=["재생 행 없음"],
                         disabled=True,
                         key=f"daily_serial_unavailable_{selected_record['file_name']}_{date_text}",
                     )
@@ -1859,10 +1931,10 @@ with tab_daily:
 
             d1, d2, d3 = st.columns(3)
             d1.metric("조회 기준", date_text)
-            d2.metric("모델 판정 행", f"{len(day_df):,}행")
+            d2.metric("재생 측정 행", f"{len(day_df):,}행")
             d3.metric("측정 구간", f"{duration_seconds / 60:.1f}분" if np.isfinite(duration_seconds) else "-")
             if not len(day_source_positions):
-                st.info("현재 파일에서 모델 점수가 계산된 행이 없습니다.")
+                st.info("현재 파일에서 실시간으로 재생된 측정 로그가 없습니다.")
 
             daily_export = measurement_kpi_log(
                 log_df,
@@ -1906,8 +1978,8 @@ with tab_daily:
                 key="daily_log_download",
             )
             st.caption(
-                "모델이 실제로 점수와 정상·불량 판정을 생성한 행만 표시합니다. "
-                "화면은 최근 500개 판정 행을 보여주며, 행을 클릭하면 아래에 "
+                "실시간 탭에서 실제로 재생된 행만 표시합니다. "
+                "화면은 최근 500개 재생 행을 보여주며, 행을 클릭하면 아래에 "
                 "176개 전압·32개 온도 센서값이 표시됩니다."
             )
 

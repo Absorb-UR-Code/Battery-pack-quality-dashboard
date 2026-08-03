@@ -15,6 +15,8 @@ from core.diagnostic_display import (
     fault_domain_coverage,
     latest_fault_payload,
     latest_scored_prediction,
+    replay_progress_high_water,
+    replayed_row_positions,
     reached_fault_payloads,
 )
 from core.features import build_row_features, build_sensor_kpis, sensor_snapshot_matrix
@@ -70,6 +72,11 @@ def main() -> None:
     assert sparse_flag and sparse_score == 0.88 and sparse_row == 140
     assert evaluated_row_positions(sparse_rows, 150).tolist() == [99, 119, 139]
     assert evaluated_row_positions(sparse_rows, 150, end_position=121).tolist() == [99, 119]
+    assert replayed_row_positions(4_864, 100).tolist() == list(range(100))
+    assert replayed_row_positions(100, 0).size == 0
+    assert replay_progress_high_water(100, 1, 4_864) == 100
+    assert replay_progress_high_water(100, 130, 4_864) == 130
+    assert replay_progress_high_water(4_864, 5_000, 4_864) == 4_864
     assert [row for row, _ in reached_fault_payloads(sparse_result, 101)] == [100]
     assert [row for row, _ in reached_fault_payloads(sparse_result, 145)] == [100, 140]
     payload_row, payload = latest_fault_payload(sparse_result, 145)

@@ -275,6 +275,31 @@ def evaluated_row_positions(
     return np.unique(positions)
 
 
+def replay_progress_high_water(
+    previous_count: int,
+    current_position: int,
+    row_count: int,
+) -> int:
+    """Return the cumulative number of source rows replayed for one file."""
+    row_count = max(0, int(row_count))
+    if row_count == 0:
+        return 0
+    return min(
+        row_count,
+        max(0, int(previous_count), int(current_position)),
+    )
+
+
+def replayed_row_positions(
+    row_count: int,
+    replayed_count: int,
+) -> np.ndarray:
+    """Return zero-based source rows that have actually reached live playback."""
+    row_count = max(0, int(row_count))
+    replayed_count = max(0, min(int(replayed_count), row_count))
+    return np.arange(replayed_count, dtype=int)
+
+
 def reached_fault_payloads(
     result: dict[str, Any] | None,
     end_position: int,
